@@ -184,11 +184,23 @@ cytadel_nvd_sync_status_t cytadel_nvd_sync_window(cytadel_db_t *db,
         out_counts->cve_ingested += page_counts.cve_ingested;
         out_counts->cve_skipped += page_counts.cve_skipped;
 
+        /* Per-page progress so an operator watching a multi-hour sync can see
+         * it is alive and how far along it is: which window, which page, what
+         * this page ingested, and the running total for this window (measured
+         * against the window's own advertised totalResults). Replaces the old
+         * once-per-page "API key is set" line, which carried no progress. */
+        cytadel_log_info(
+            "nvd_sync: window [%s..%s] page %zu: +%zu ingested, +%zu skipped "
+            "(%zu ingested / %ld total this window)",
+            (start_date != NULL) ? start_date : "(bulk)", end_date, out_counts->pages_fetched,
+            page_counts.cve_ingested, page_counts.cve_skipped, out_counts->cve_ingested, total_results);
+
         if (is_last) {
-            cytadel_log_info("nvd_sync: window complete -- %zu page(s), %zu ingested, %zu skipped; "
-                             "watermark advanced",
+            cytadel_log_info("nvd_sync: window [%s..%s] complete -- %zu page(s), %zu ingested, "
+                             "%zu skipped; watermark advanced to %s",
+                             (start_date != NULL) ? start_date : "(bulk)", end_date,
                              out_counts->pages_fetched, out_counts->cve_ingested,
-                             out_counts->cve_skipped);
+                             out_counts->cve_skipped, end_date);
             return CYTADEL_NVD_SYNC_OK;
         }
         start_index_l += per_page;

@@ -438,7 +438,14 @@ secondary indexes.
 whichever component runs the scheduled sync):
 
 1. Read `last_mod_watermark` for `feed = 'nvd'`. If `NULL`, this is the initial bulk load —
-   start from the NVD dataset's earliest date and page through the full CVE corpus.
+   start from the NVD dataset's earliest date (the CVE program's first year, 1999) and catch
+   up to the present exactly as steps 2–6 do: as a chronological sequence of small
+   `lastModStartDate`/`lastModEndDate` windows, each committed independently (step 5), **not**
+   as one giant unfiltered request. Windowing by `lastModified` from 1999 onward still covers
+   the whole corpus (every CVE's `lastModified` falls in exactly one window), while bounding
+   the cost of any single network failure to one window and letting an interrupted bulk load
+   resume from the last committed window instead of restarting the whole corpus. A smaller
+   window length than the routine 120-day cap is appropriate here since the bulk span is huge.
 2. Otherwise, sync from `lastModStartDate = last_mod_watermark` to `lastModEndDate = min(now,
    last_mod_watermark + 120 days)` (NVD API 2.0 caps each window at 120 days).
 3. Page with `startIndex`/`resultsPerPage` (up to 2000) until the window is exhausted.

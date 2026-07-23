@@ -251,6 +251,7 @@ static void test_resolve_now_invalid_args(void) {
 
 static void test_build_fetch_config_default_base_url(void) {
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_API_URL"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_MAX_RETRIES"), 0); /* default assertion below needs it unset */
 
     cytadel_nvd_fetch_config_t cfg;
     cytadel_sync_cmd_build_fetch_config(&cfg);
@@ -276,6 +277,38 @@ static void test_build_fetch_config_honors_url_override(void) {
     CYTADEL_ASSERT_STREQ(cfg.base_url, "https://mirror.example.internal/cves/2.0");
 
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_API_URL"), 0);
+}
+
+/* The operator retry knob: honored when valid, clamped to the cap, and a
+ * garbage/negative value is ignored (built-in default kept) rather than
+ * silently mis-tuning the sync. */
+static void test_build_fetch_config_honors_max_retries_override(void) {
+    cytadel_nvd_fetch_config_t cfg;
+    cytadel_nvd_fetch_config_t def;
+    cytadel_nvd_fetch_config_init_default(&def);
+
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "0", 1), 0);
+    cytadel_sync_cmd_build_fetch_config(&cfg);
+    CYTADEL_ASSERT_EQ(cfg.max_retries, 0);
+
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "2", 1), 0);
+    cytadel_sync_cmd_build_fetch_config(&cfg);
+    CYTADEL_ASSERT_EQ(cfg.max_retries, 2);
+
+    /* Absurd value clamps to the cap -- never an unbounded retry storm. */
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "100000", 1), 0);
+    cytadel_sync_cmd_build_fetch_config(&cfg);
+    CYTADEL_ASSERT(cfg.max_retries > 0 && cfg.max_retries <= 20);
+
+    /* Non-numeric and negative are ignored -> built-in default preserved. */
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "not-a-number", 1), 0);
+    cytadel_sync_cmd_build_fetch_config(&cfg);
+    CYTADEL_ASSERT_EQ(cfg.max_retries, def.max_retries);
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "-3", 1), 0);
+    cytadel_sync_cmd_build_fetch_config(&cfg);
+    CYTADEL_ASSERT_EQ(cfg.max_retries, def.max_retries);
+
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_MAX_RETRIES"), 0);
 }
 
 static void test_build_fetch_config_null_is_safe(void) {
@@ -326,6 +359,11 @@ static void test_run_end_to_end_wiring_no_network(void) {
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u", (unsigned)port);
     CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_API_URL", url, 1), 0);
+    /* This test exercises the WIRING, not retry/backoff timing -- a refused
+     * connection is now a retryable transport error, so pin retries to 0 (via
+     * the same operator env knob build_fetch_config honors) to keep it fast and
+     * deterministic. Retry behavior itself is covered by test_nvd_catchup.c. */
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "0", 1), 0);
 
     cytadel_sync_cmd_args_t args;
     memset(&args, 0, sizeof(args));
@@ -336,6 +374,7 @@ static void test_run_end_to_end_wiring_no_network(void) {
     CYTADEL_ASSERT_EQ(rc, EXIT_FAILURE); /* connection refused -> catch-up fails */
 
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_API_URL"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_MAX_RETRIES"), 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -394,6 +433,7 @@ static void test_run_never_leaks_api_key_value(void) {
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u", (unsigned)port);
     CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_API_URL", url, 1), 0);
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "0", 1), 0); /* fail fast; see wiring test */
 
     char out_path[256];
     make_temp_path(out_path, sizeof(out_path), "-capture.txt");
@@ -435,6 +475,7 @@ static void test_run_never_leaks_api_key_value(void) {
     unlink(out_path);
     CYTADEL_ASSERT_EQ(unsetenv("NVD_API_KEY"), 0);
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_API_URL"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_MAX_RETRIES"), 0);
 }
 
 int main(void) {
@@ -457,6 +498,7 @@ int main(void) {
 
     test_build_fetch_config_default_base_url();
     test_build_fetch_config_honors_url_override();
+    test_build_fetch_config_honors_max_retries_override();
     test_build_fetch_config_null_is_safe();
 
     test_run_missing_db_path_fails_cleanly();

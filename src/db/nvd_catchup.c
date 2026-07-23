@@ -406,38 +406,53 @@ cytadel_nvd_catchup_status_t cytadel_nvd_catchup(cytadel_db_t *db,
         return rd_status;
     }
 
-    if (!have_watermark) {
-        /* db-schema.md SS8 step 1: no prior watermark -- the initial bulk
-         * load, one window, no lastModStartDate filter. */
-        cytadel_nvd_sync_counts_t window_counts;
-        cytadel_nvd_sync_status_t st =
-            cytadel_nvd_sync_window(db, cfg, NULL, now_iso8601, 0, &window_counts);
-        if (st != CYTADEL_NVD_SYNC_OK) {
-            cytadel_log_warn("nvd_catchup: initial bulk-load window failed (%s)",
-                             cytadel_nvd_sync_status_to_string(st));
-            return CYTADEL_NVD_CATCHUP_ERR_SYNC;
-        }
-        out->windows_completed = 1;
-        out->pages_fetched = window_counts.pages_fetched;
-        out->cve_ingested = window_counts.cve_ingested;
-        out->cve_skipped = window_counts.cve_skipped;
-        return CYTADEL_NVD_CATCHUP_OK;
-    }
+    /* One human-facing API-key status line per sync run (whether it is set and
+     * whether it will be sent -- never the value). Replaces the fetch layer's
+     * old once-per-page logging, which repeated an identical line for every
+     * page of a multi-hour bulk load. */
+    cytadel_nvd_fetch_log_api_key_status(cfg->base_url);
 
+    /* Establish the starting cursor and the per-window length. Both the
+     * initial bulk load (no prior watermark) and a routine incremental
+     * catch-up (a watermark exists) run the SAME chronological window loop
+     * below -- they differ only in where the cursor starts and how large each
+     * window is. The bulk load starts at the CVE-program epoch and uses small
+     * (CYTADEL_NVD_CATCHUP_BULK_WINDOW_DAYS) windows so a failure part way
+     * through costs one small window, not the whole corpus; a routine
+     * catch-up starts at the stored watermark and uses the full 120-day
+     * ceiling. */
     cytadel_instant_t cursor;
-    if (!parse_instant(watermark_raw, &cursor)) {
-        cytadel_log_error(
-            "nvd_catchup: stored sync_state.last_mod_watermark ('%s') does not parse as a valid "
-            "YYYY-MM-DD date or YYYY-MM-DDTHH:MM:SS[.sss][Z] instant -- refusing to catch up",
-            watermark_raw);
-        return CYTADEL_NVD_CATCHUP_ERR_MALFORMED_WATERMARK;
+    long window_days;
+    if (have_watermark) {
+        if (!parse_instant(watermark_raw, &cursor)) {
+            cytadel_log_error(
+                "nvd_catchup: stored sync_state.last_mod_watermark ('%s') does not parse as a valid "
+                "YYYY-MM-DD date or YYYY-MM-DDTHH:MM:SS[.sss][Z] instant -- refusing to catch up",
+                watermark_raw);
+            return CYTADEL_NVD_CATCHUP_ERR_MALFORMED_WATERMARK;
+        }
+        window_days = CYTADEL_NVD_CATCHUP_WINDOW_DAYS;
+    } else {
+        /* CYTADEL_NVD_EPOCH_START is a compile-time constant this module owns,
+         * so a parse failure here would be an internal bug, never untrusted
+         * input -- fail closed rather than proceed from an undefined cursor. */
+        if (!parse_instant(CYTADEL_NVD_EPOCH_START, &cursor)) {
+            cytadel_log_error("nvd_catchup: internal error -- the built-in epoch '%s' did not parse",
+                              CYTADEL_NVD_EPOCH_START);
+            return CYTADEL_NVD_CATCHUP_ERR_MALFORMED_WATERMARK;
+        }
+        window_days = CYTADEL_NVD_CATCHUP_BULK_WINDOW_DAYS;
+        cytadel_log_info(
+            "nvd_catchup: no prior watermark -- initial bulk load from %s in %ld-day windows "
+            "(each commits independently; a failure resumes from the last committed window)",
+            CYTADEL_NVD_EPOCH_START, window_days);
     }
 
-    /* db-schema.md SS8 step 6: repeat 120-day windows, chronologically,
-     * until caught up. `cursor < now_instant` is the loop condition; each
-     * iteration only ever advances `cursor` to a window bound that a prior
-     * cytadel_nvd_sync_window() call has ALREADY durably committed (that
-     * call's own OK return is the only thing that lets this loop advance
+    /* db-schema.md SS8 step 6: repeat `window_days`-day windows,
+     * chronologically, until caught up. `cursor < now_instant` is the loop
+     * condition; each iteration only ever advances `cursor` to a window bound
+     * that a prior cytadel_nvd_sync_window() call has ALREADY durably committed
+     * (that call's own OK return is the only thing that lets this loop advance
      * past that point) -- see this file's own top-of-file/header
      * "WATERMARK-ADVANCE INVARIANT" note. */
     while (instant_compare(&cursor, &now_instant) < 0) {
@@ -455,8 +470,7 @@ cytadel_nvd_catchup_status_t cytadel_nvd_catchup(cytadel_db_t *db,
             return CYTADEL_NVD_CATCHUP_ERR_MALFORMED_WATERMARK;
         }
 
-        cytadel_instant_t candidate_end =
-            instant_add_days(cursor, CYTADEL_NVD_CATCHUP_WINDOW_DAYS);
+        cytadel_instant_t candidate_end = instant_add_days(cursor, window_days);
         cytadel_instant_t window_end =
             (instant_compare(&candidate_end, &now_instant) < 0) ? candidate_end : now_instant;
 
@@ -481,6 +495,15 @@ cytadel_nvd_catchup_status_t cytadel_nvd_catchup(cytadel_db_t *db,
         out->pages_fetched += window_counts.pages_fetched;
         out->cve_ingested += window_counts.cve_ingested;
         out->cve_skipped += window_counts.cve_skipped;
+
+        /* Per-window rollup: the cross-window running totals a per-page line
+         * (nvd_sync.c) cannot show, so an operator watching a long bulk load
+         * sees overall progress advance window by window. */
+        cytadel_log_info(
+            "nvd_catchup: window %zu committed [%s..%s]: %zu ingested, %zu skipped "
+            "(run totals: %zu ingested, %zu skipped across %zu window(s))",
+            out->windows_completed, start_buf, end_buf, window_counts.cve_ingested,
+            window_counts.cve_skipped, out->cve_ingested, out->cve_skipped, out->windows_completed);
 
         cursor = window_end;
     }

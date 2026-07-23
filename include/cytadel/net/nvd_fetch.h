@@ -63,14 +63,18 @@
  *      not get "fixed" by trying again); any other unexpected status fails
  *      immediately as CYTADEL_NVD_FETCH_ERR_HTTP. Every retry path is bounded
  *      by `max_retries` -- there is no unbounded retry loop.
- *   5. A transport-level failure (connect refused, TLS handshake failure,
- *      timeout, the write-callback size-cap abort above, or a
+ *   5. A network-level transport failure (connect refused, TLS handshake
+ *      failure, timeout, a peer that closes having sent nothing, or a
  *      truncated/short transfer where curl detects fewer bytes arrived than
- *      Content-Length promised) is CYTADEL_NVD_FETCH_ERR_TRANSPORT and is
- *      NOT retried by this module -- retrying a connection-level failure is
- *      the caller's call to make (it is not, since this milestone's own
- *      driver treats every non-OK status from this function as "this page
- *      failed, abort the window" -- see nvd_sync.h).
+ *      Content-Length promised) IS retried, bounded by `max_retries`, with the
+ *      same exponential-backoff-plus-jitter schedule as a 5xx -- NVD times out
+ *      routinely and a single such hiccup must not abandon a whole window.
+ *      Only once every retry is exhausted does it surface as
+ *      CYTADEL_NVD_FETCH_ERR_TRANSPORT. The ONE transport outcome that is
+ *      never retried is this module's OWN defensive abort -- the write-callback
+ *      size-cap (item 1) tripping, or a local allocation failure -- since
+ *      retrying that would merely re-pull the same oversized/hostile body; it
+ *      returns CYTADEL_NVD_FETCH_ERR_TRANSPORT immediately.
  *
  * SECRET HYGIENE (project rule 4, this milestone's task brief): the NVD
  * API key is read via getenv(CYTADEL_NVD_API_KEY_ENV_VAR) ONLY inside
@@ -111,6 +115,15 @@ extern "C" {
  * assert against it and so there is exactly one place in this header
  * documenting the contract. */
 #define CYTADEL_NVD_API_KEY_ENV_VAR "CYTADEL_NVD_API_KEY"
+
+/* Logs a single, human-facing line describing whether the NVD API key is set
+ * (and, when set, whether it will actually be sent -- i.e. the endpoint is
+ * https://). Reads CYTADEL_NVD_API_KEY via getenv() but, exactly like the
+ * per-request header builder, NEVER logs the value itself. This exists so a
+ * sync run reports the key's status EXACTLY ONCE at startup, instead of the
+ * per-page fetch layer repeating an identical line for every page of a
+ * multi-hour bulk load. `base_url` may be NULL (treated as "not https"). */
+void cytadel_nvd_fetch_log_api_key_status(const char *base_url);
 
 /* Official NVD 2.0 CVE API base URL (docs/build-plan.md's own dependency
  * table; matches .env.example's CYTADEL_NVD_API_URL default). Only ever

@@ -190,9 +190,11 @@ static void secure_zero(void *buf, size_t len) {
 static struct curl_slist *append_api_key_header(struct curl_slist *headers, const char *base_url) {
     const char *key = getenv(CYTADEL_NVD_API_KEY_ENV_VAR);
     if (key == NULL || key[0] == '\0') {
-        cytadel_log_info("nvd_fetch: %s is not set -- proceeding unauthenticated (NVD's lower, "
-                          "unauthenticated rate limit applies)",
-                          CYTADEL_NVD_API_KEY_ENV_VAR);
+        /* Per-attempt info logging is deliberately suppressed here: this runs
+         * once per page and used to emit an identical "key is/ isn't set" line
+         * on every page, drowning out real progress. The key's status is
+         * instead logged exactly once per sync run by
+         * cytadel_nvd_fetch_log_api_key_status(). */
         return headers;
     }
 
@@ -229,15 +231,41 @@ static struct curl_slist *append_api_key_header(struct curl_slist *headers, cons
                                "%s header -- proceeding unauthenticated for this attempt",
                                CYTADEL_NVD_API_KEY_ENV_VAR);
         } else {
-            cytadel_log_info("nvd_fetch: %s is set and base_url is https:// -- sending the apiKey "
-                              "request header",
-                              CYTADEL_NVD_API_KEY_ENV_VAR);
+            /* Success path: no per-attempt log (see the not-set branch above);
+             * the one-shot status line is cytadel_nvd_fetch_log_api_key_status(). */
             result = updated;
         }
     }
 
     secure_zero(header_line, sizeof(header_line));
     return result;
+}
+
+/* One-shot, human-facing API-key status line for the start of a sync run --
+ * see nvd_fetch.h. Reads CYTADEL_NVD_API_KEY once (via getenv) but, exactly
+ * like append_api_key_header(), NEVER logs the value itself, only whether it
+ * is set and whether it will actually be sent (an https endpoint). Intended to
+ * be called exactly once per sync run by the catch-up driver, replacing the
+ * old once-per-page logging. */
+void cytadel_nvd_fetch_log_api_key_status(const char *base_url) {
+    const char *key = getenv(CYTADEL_NVD_API_KEY_ENV_VAR);
+    if (key == NULL || key[0] == '\0') {
+        cytadel_log_info(
+            "nvd sync: %s is not set -- using NVD's unauthenticated rate limit (~5 requests/30s). "
+            "Setting an API key raises this to ~50/30s and makes the initial bulk load far faster.",
+            CYTADEL_NVD_API_KEY_ENV_VAR);
+        return;
+    }
+    if (base_url != NULL && !url_is_https(base_url)) {
+        cytadel_log_warn(
+            "nvd sync: %s is set but the endpoint is not https:// -- the key will be withheld and "
+            "requests proceed unauthenticated (the value itself is never logged)",
+            CYTADEL_NVD_API_KEY_ENV_VAR);
+        return;
+    }
+    cytadel_log_info(
+        "nvd sync: %s is set -- sending authenticated requests (the value itself is never logged)",
+        CYTADEL_NVD_API_KEY_ENV_VAR);
 }
 
 /* ------------------------------------------------------------------ */
@@ -285,8 +313,19 @@ typedef enum {
     ATTEMPT_OK,
     ATTEMPT_RETRY_429,
     ATTEMPT_RETRY_5XX,
+    /* A retryable transport failure: curl_easy_perform() returned a network-
+     * level error (timeout, connection reset/refused, DNS failure, a peer that
+     * closed with nothing sent, a truncated transfer). NVD times these out
+     * routinely, so -- unlike ATTEMPT_TRANSPORT_FAIL below -- one of these does
+     * NOT abandon the window on its own; it is retried with the same bounded
+     * exponential backoff as a 5xx. */
+    ATTEMPT_RETRY_TRANSPORT,
     ATTEMPT_AUTH_FAIL,
     ATTEMPT_HTTP_FAIL,
+    /* A NON-retryable transport failure: our own defensive abort (the response
+     * exceeded the size cap, or a local allocation failed) or a fail-closed
+     * setopt/init error. Retrying cannot help and would only re-pull a hostile/
+     * oversized body, so this abandons the window immediately. */
     ATTEMPT_TRANSPORT_FAIL
 } attempt_result_t;
 
@@ -371,16 +410,22 @@ static attempt_result_t do_one_attempt(const cytadel_nvd_fetch_config_t *cfg, co
     CURLcode rc = curl_easy_perform(easy);
 
     if (rc != CURLE_OK) {
+        free(ctx.buf);
         if (ctx.aborted) {
+            /* Our own size-cap / allocation abort -- NOT retryable (retrying
+             * would just re-pull the same oversized/hostile body). */
             cytadel_log_warn(
                 "nvd_fetch: response body aborted (exceeded the %zu-byte cap, or a local allocation "
-                "failure) -- treating this page as a failed fetch",
+                "failure) -- treating this page as a failed fetch (not retried)",
                 cfg->max_response_bytes);
+            result = ATTEMPT_TRANSPORT_FAIL;
         } else {
-            cytadel_log_warn("nvd_fetch: transport error (curl rc=%d): %s", (int)rc, curl_easy_strerror(rc));
+            /* A genuine network-level error (timeout, reset, DNS, short/empty
+             * transfer) -- retryable with bounded backoff. */
+            cytadel_log_warn("nvd_fetch: transport error (curl rc=%d): %s -- will retry if attempts remain",
+                              (int)rc, curl_easy_strerror(rc));
+            result = ATTEMPT_RETRY_TRANSPORT;
         }
-        free(ctx.buf);
-        result = ATTEMPT_TRANSPORT_FAIL;
     } else {
         long http_status = 0;
         curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http_status);
@@ -549,7 +594,7 @@ cytadel_nvd_fetch_status_t cytadel_nvd_fetch_page(const cytadel_nvd_fetch_config
             return CYTADEL_NVD_FETCH_OK;
         }
         if (r == ATTEMPT_TRANSPORT_FAIL) {
-            return CYTADEL_NVD_FETCH_ERR_TRANSPORT;
+            return CYTADEL_NVD_FETCH_ERR_TRANSPORT; /* non-retryable (our abort / setopt failure) */
         }
         if (r == ATTEMPT_AUTH_FAIL) {
             return CYTADEL_NVD_FETCH_ERR_AUTH;
@@ -558,14 +603,23 @@ cytadel_nvd_fetch_status_t cytadel_nvd_fetch_page(const cytadel_nvd_fetch_config
             return CYTADEL_NVD_FETCH_ERR_HTTP;
         }
 
-        /* Only ATTEMPT_RETRY_429 / ATTEMPT_RETRY_5XX remain -- both are
-         * bounded by cfg->max_retries, never an unbounded loop. */
+        /* Only the retryable classes remain -- ATTEMPT_RETRY_429 /
+         * ATTEMPT_RETRY_5XX / ATTEMPT_RETRY_TRANSPORT -- all bounded by
+         * cfg->max_retries, never an unbounded loop. */
         attempt++;
         if (attempt > cfg->max_retries) {
-            cytadel_log_error("nvd_fetch: giving up after %d retries (%s)", cfg->max_retries,
-                               (r == ATTEMPT_RETRY_429) ? "rate limited" : "server error");
-            return (r == ATTEMPT_RETRY_429) ? CYTADEL_NVD_FETCH_ERR_RATE_LIMITED
-                                             : CYTADEL_NVD_FETCH_ERR_SERVER;
+            const char *why = (r == ATTEMPT_RETRY_429)   ? "rate limited"
+                              : (r == ATTEMPT_RETRY_5XX) ? "server error"
+                                                         : "transport error";
+            cytadel_log_error("nvd_fetch: giving up after %d retr%s (%s)", cfg->max_retries,
+                               (cfg->max_retries == 1) ? "y" : "ies", why);
+            if (r == ATTEMPT_RETRY_429) {
+                return CYTADEL_NVD_FETCH_ERR_RATE_LIMITED;
+            }
+            if (r == ATTEMPT_RETRY_5XX) {
+                return CYTADEL_NVD_FETCH_ERR_SERVER;
+            }
+            return CYTADEL_NVD_FETCH_ERR_TRANSPORT;
         }
 
         long delay_ms;

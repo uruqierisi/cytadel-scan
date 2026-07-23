@@ -1,9 +1,15 @@
 #include "sync_cmd.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "log.h"
+
+/* Upper bound on the operator-tunable retry count (CYTADEL_NVD_MAX_RETRIES):
+ * even a fat-fingered value cannot request a retry storm. Generous headroom
+ * over the built-in default of a handful of attempts. */
+#define CYTADEL_SYNC_CMD_MAX_RETRIES_CAP 20
 
 /* M9 Phase 4a: see sync_cmd.h for the full design/contract this file
  * implements. This comment covers implementation details only.
@@ -132,6 +138,26 @@ void cytadel_sync_cmd_build_fetch_config(cytadel_nvd_fetch_config_t *out_cfg) {
     const char *base_url_override = getenv("CYTADEL_NVD_API_URL");
     if (base_url_override != NULL && base_url_override[0] != '\0') {
         out_cfg->base_url = base_url_override;
+    }
+
+    /* Optional operator tuning: how many times a failed page fetch (a network
+     * transport error, an HTTP 429, or a 5xx) is retried before its window is
+     * abandoned. Unset leaves the built-in default. Clamped to
+     * [0, CYTADEL_SYNC_CMD_MAX_RETRIES_CAP]; a non-numeric or negative value is
+     * ignored with a warning rather than silently mis-tuning the sync. */
+    const char *retries_override = getenv("CYTADEL_NVD_MAX_RETRIES");
+    if (retries_override != NULL && retries_override[0] != '\0') {
+        errno = 0;
+        char *end = NULL;
+        long v = strtol(retries_override, &end, 10);
+        if (errno == 0 && end != retries_override && *end == '\0' && v >= 0) {
+            out_cfg->max_retries = (v > CYTADEL_SYNC_CMD_MAX_RETRIES_CAP)
+                                       ? CYTADEL_SYNC_CMD_MAX_RETRIES_CAP
+                                       : (int)v;
+        } else {
+            fprintf(stderr,
+                    "cytadel-scan sync: warning: ignoring invalid CYTADEL_NVD_MAX_RETRIES value\n");
+        }
     }
 }
 

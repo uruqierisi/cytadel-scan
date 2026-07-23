@@ -75,21 +75,39 @@
 extern "C" {
 #endif
 
-/* NVD 2.0's own documented ceiling on a single lastModStartDate/
- * lastModEndDate window (db-schema.md SS8 step 2's "NVD API 2.0 caps each
- * window at 120 days"). */
+/* Window length for the ROUTINE catch-up (a prior watermark exists). NVD 2.0
+ * caps a single lastModStartDate/lastModEndDate window at 120 days
+ * (db-schema.md SS8 step 2); this uses that ceiling directly, since a routine
+ * incremental sync is rarely more than a window or two behind. */
 #define CYTADEL_NVD_CATCHUP_WINDOW_DAYS 120
 
-/* Hostile-input safety valve: an upper bound on how many 120-day windows a
- * single cytadel_nvd_catchup() call will ever drive. At 120 days/window this
- * covers roughly 328 years of catch-up (1000 * 120 / 365.25) -- NVD's own
- * CVE program did not exist before 1999, so a legitimate watermark, however
- * stale, never comes close to this. It exists purely so a hostile or
- * corrupted watermark (e.g. a stray "0001-01-01") cannot make this function
- * loop for an unbounded/impractically long time: once exceeded, the loop
- * aborts cleanly with CYTADEL_NVD_CATCHUP_ERR_TOO_MANY_WINDOWS instead of
- * either hanging or (worse) silently truncating the catch-up without
- * telling the caller. */
+/* Window length for the INITIAL BULK LOAD only (no prior watermark). The bulk
+ * load spans the whole CVE corpus -- from CYTADEL_NVD_EPOCH_START to now -- so
+ * it is deliberately chunked into much smaller windows than the routine
+ * catch-up above: a single network hiccup then costs one ~30-day window's
+ * worth of re-fetch, not the entire multi-hundred-thousand-CVE load. Well
+ * under NVD's own 120-day-per-window ceiling. */
+#define CYTADEL_NVD_CATCHUP_BULK_WINDOW_DAYS 30
+
+/* The earliest lastModified any NVD CVE can carry: the CVE program's first
+ * year. Every CVE -- including the handful with pre-1999 IDs (e.g. CVE-1988-*),
+ * which NVD assigned a real, later lastModified when it ingested them -- has a
+ * lastModified at or after this instant, so tiling contiguous lastMod windows
+ * from here to `now` covers the whole corpus with each CVE landing in exactly
+ * one window. Used as the bulk load's start bound, replacing the old single
+ * no-date-filter "fetch everything at once" request. */
+#define CYTADEL_NVD_EPOCH_START "1999-01-01T00:00:00.000Z"
+
+/* Hostile-input safety valve: an upper bound on how many windows a single
+ * cytadel_nvd_catchup() call will ever drive. The tightest case is the initial
+ * bulk load at CYTADEL_NVD_CATCHUP_BULK_WINDOW_DAYS (30) days/window: 1000
+ * windows covers ~82 years from CYTADEL_NVD_EPOCH_START (1000 * 30 / 365.25),
+ * i.e. well past any realistic `now`, while the routine 120-day catch-up has
+ * even more headroom. It exists purely so a hostile or corrupted watermark
+ * (e.g. a stray "0001-01-01") cannot make this function loop for an
+ * unbounded/impractically long time: once exceeded, the loop aborts cleanly
+ * with CYTADEL_NVD_CATCHUP_ERR_TOO_MANY_WINDOWS instead of either hanging or
+ * (worse) silently truncating the catch-up without telling the caller. */
 #define CYTADEL_NVD_CATCHUP_MAX_WINDOWS 1000
 
 typedef enum {
@@ -142,9 +160,16 @@ const char *cytadel_nvd_catchup_status_to_string(cytadel_nvd_catchup_status_t st
  *
  *   1. Reads sync_state.last_mod_watermark for feed='nvd' (parameterized
  *      read, never string-concatenated).
- *   2. NULL/empty watermark (no prior sync ever completed): drives exactly
- *      ONE window with start_date=NULL (the initial bulk load) and
- *      end_date=now_iso8601.
+ *   2. NULL/empty watermark (no prior sync ever completed): the initial bulk
+ *      load. Drives a chronological sequence of
+ *      CYTADEL_NVD_CATCHUP_BULK_WINDOW_DAYS-day windows from
+ *      CYTADEL_NVD_EPOCH_START up to now_iso8601 -- each an ordinary
+ *      lastModStartDate/lastModEndDate window that commits (and advances the
+ *      durable watermark) independently, exactly like step 3's loop. So a
+ *      failure part way through the bulk load loses only the current window,
+ *      and the next call resumes from the last committed one via step 3 (the
+ *      watermark it left behind is now non-NULL) -- it never restarts the
+ *      whole corpus from zero.
  *   3. Otherwise: start = watermark; loop while start < now: end =
  *      min(start + CYTADEL_NVD_CATCHUP_WINDOW_DAYS days, now); drive
  *      cytadel_nvd_sync_window(db, cfg, start, end, 0, ...); on OK, advance

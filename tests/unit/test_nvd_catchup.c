@@ -244,15 +244,28 @@ static void make_cfg(cytadel_nvd_fetch_config_t *cfg, char *url_buf, size_t url_
     cfg->ca_info_path = NULL; /* plain http fixture, no TLS trust store needed */
 }
 
-/* ----- Test 1: no watermark -> single bulk-load window -------------------- */
+/* ----- Test 1: no watermark -> CHUNKED bulk load from the epoch ----------- */
 
-static void test_no_watermark_single_bulk_load_window(void) {
-    static const char *const NOW = "2024-05-01T00:00:00.000Z";
+/* The initial bulk load (no prior watermark) is NOT one giant unfiltered
+ * request: it tiles small CYTADEL_NVD_CATCHUP_BULK_WINDOW_DAYS (30) day
+ * lastMod windows from CYTADEL_NVD_EPOCH_START (1999-01-01) to `now`, each
+ * committing independently. `now` is deliberately picked close to the epoch so
+ * the whole load is just two windows (a full 1999->today load would be
+ * hundreds -- correct in production, impractical to script here):
+ *   epoch 1999-01-01 + 30d = 1999-01-31   (window 1 end)
+ *   1999-01-31 + 30d = 1999-03-02 > now   (window 2 capped at now)
+ * so windows are [1999-01-01 .. 1999-01-31] and [1999-01-31 .. 1999-02-20].
+ * The key change from the old behavior: window 1 carries a real
+ * lastModStartDate of the epoch, NOT the absence of any date filter. */
+static void test_no_watermark_bulk_load_chunked_from_epoch(void) {
+    static const char *const EPOCH = "1999-01-01T00:00:00.000Z";
+    static const char *const W1_END = "1999-01-31T00:00:00.000Z";
+    static const char *const NOW = "1999-02-20T00:00:00.000Z";
 
     uint16_t port = 0;
     int listen_fd = bind_ephemeral(&port);
     fixture_t fx = {.listen_fd = listen_fd};
-    fixture_fill_empty_pages(&fx, 1);
+    fixture_fill_empty_pages(&fx, 2);
 
     pthread_t th;
     CYTADEL_ASSERT(pthread_create(&th, NULL, fixture_main, &fx) == 0);
@@ -271,14 +284,154 @@ static void test_no_watermark_single_bulk_load_window(void) {
     cytadel_nvd_catchup_counts_t counts;
     cytadel_nvd_catchup_status_t st = cytadel_nvd_catchup(db, &cfg, NOW, &counts);
     CYTADEL_ASSERT_EQ(st, CYTADEL_NVD_CATCHUP_OK);
-    CYTADEL_ASSERT_EQ(counts.windows_completed, 1);
-    CYTADEL_ASSERT_EQ(counts.pages_fetched, 1);
+    CYTADEL_ASSERT_EQ(counts.windows_completed, 2);
+    CYTADEL_ASSERT_EQ(counts.pages_fetched, 2);
     CYTADEL_ASSERT_EQ(counts.cve_ingested, 0);
 
     pthread_join(th, NULL);
-    /* Bulk load: start_date=NULL, end_date=now -- no lastModStartDate/
-     * lastModEndDate query params at all (db-schema.md SS8 step 1). */
-    assert_request_window(fx.captured_requests[0], NULL, NOW);
+    /* Bulk load is chunked: window 1 starts AT the epoch (a real
+     * lastModStartDate), NOT the old "no date filter at all" shape. */
+    assert_request_window(fx.captured_requests[0], EPOCH, W1_END);
+    assert_request_window(fx.captured_requests[1], W1_END, NOW);
+
+    char wm1[64];
+    read_nvd_watermark(h, wm1, sizeof(wm1));
+    CYTADEL_ASSERT_STREQ(wm1, NOW);
+
+    cytadel_db_close(db);
+    fixture_free_requests(&fx);
+    fixture_free_responses(&fx);
+    close(listen_fd);
+}
+
+/* ----- Test 1b: bulk load TRANSPORT failure -> resume from watermark ------ */
+
+/* The resume guarantee the whole chunking design exists for. A bulk load's
+ * second window is made to fail with a TRANSPORT error (the fixture accepts
+ * the connection and closes having sent nothing -> curl CURLE_GOT_NOTHING),
+ * with max_retries=0 so it fails at once. The claim under test, in two runs
+ * against two fixtures:
+ *   RUN 1 (failing): window 1 commits, window 2's transport error stops the
+ *     catch-up (ERR_SYNC, exactly 1 window completed), and the DURABLE
+ *     watermark sits at window 1's end -- NOT the epoch, NOT window 2's end.
+ *   RUN 2 (healthy): a fresh catch-up re-reads that committed watermark and
+ *     RESUMES from it (its first request's lastModStartDate is window 1's end,
+ *     1999-01-31 -- provably NOT the epoch 1999-01-01), completing to `now`.
+ * A driver that restarted the whole corpus from the epoch on resume would send
+ * lastModStartDate=1999-01-01 in run 2 and fail this test. */
+static void test_bulk_transport_failure_resumes_from_watermark(void) {
+    static const char *const W1_END = "1999-01-31T00:00:00.000Z";
+    static const char *const NOW = "1999-04-05T00:00:00.000Z";
+
+    /* --- RUN 1: window 1 OK, window 2 transport failure --- */
+    uint16_t port1 = 0;
+    int listen_fd1 = bind_ephemeral(&port1);
+    fixture_t fx1 = {.listen_fd = listen_fd1};
+    fx1.count = 2;
+    fx1.responses[0] = http_response("HTTP/1.1 200 OK", EMPTY_PAGE_BODY, &fx1.response_lens[0]);
+    fx1.responses[1] = NULL; /* send 0 bytes then close -> curl CURLE_GOT_NOTHING (transport) */
+    fx1.response_lens[1] = 0;
+
+    pthread_t th1;
+    CYTADEL_ASSERT(pthread_create(&th1, NULL, fixture_main, &fx1) == 0);
+
+    sqlite3 *h = NULL;
+    cytadel_db_t *db = fresh_migrated_db(&h);
+
+    char url1[64];
+    cytadel_nvd_fetch_config_t cfg1;
+    make_cfg(&cfg1, url1, sizeof(url1), port1); /* make_cfg sets max_retries=0 */
+
+    cytadel_nvd_catchup_counts_t counts1;
+    cytadel_nvd_catchup_status_t st1 = cytadel_nvd_catchup(db, &cfg1, NOW, &counts1);
+    CYTADEL_ASSERT_EQ(st1, CYTADEL_NVD_CATCHUP_ERR_SYNC);
+    CYTADEL_ASSERT_EQ(counts1.windows_completed, 1);
+
+    pthread_join(th1, NULL);
+    char wm_after_fail[64];
+    read_nvd_watermark(h, wm_after_fail, sizeof(wm_after_fail));
+    CYTADEL_ASSERT_STREQ(wm_after_fail, W1_END); /* NOT epoch, NOT window 2's end */
+
+    fixture_free_requests(&fx1);
+    fixture_free_responses(&fx1); /* free(NULL) for the transport-fail slot is safe */
+    close(listen_fd1);
+
+    /* --- RUN 2: healthy; must RESUME from W1_END, not restart from the epoch --- */
+    uint16_t port2 = 0;
+    int listen_fd2 = bind_ephemeral(&port2);
+    fixture_t fx2 = {.listen_fd = listen_fd2};
+    fixture_fill_empty_pages(&fx2, 1); /* 1999-01-31 -> 1999-04-05 is 64 days: one 120-day window */
+
+    pthread_t th2;
+    CYTADEL_ASSERT(pthread_create(&th2, NULL, fixture_main, &fx2) == 0);
+
+    char url2[64];
+    cytadel_nvd_fetch_config_t cfg2;
+    make_cfg(&cfg2, url2, sizeof(url2), port2);
+
+    cytadel_nvd_catchup_counts_t counts2;
+    cytadel_nvd_catchup_status_t st2 = cytadel_nvd_catchup(db, &cfg2, NOW, &counts2);
+    CYTADEL_ASSERT_EQ(st2, CYTADEL_NVD_CATCHUP_OK);
+    CYTADEL_ASSERT_EQ(counts2.windows_completed, 1);
+
+    pthread_join(th2, NULL);
+    /* The resume window starts at the committed watermark (W1_END), proving it
+     * did NOT restart the whole bulk load from the epoch. */
+    assert_request_window(fx2.captured_requests[0], W1_END, NOW);
+
+    char wm_final[64];
+    read_nvd_watermark(h, wm_final, sizeof(wm_final));
+    CYTADEL_ASSERT_STREQ(wm_final, NOW);
+
+    cytadel_db_close(db);
+    fixture_free_requests(&fx2);
+    fixture_free_responses(&fx2);
+    close(listen_fd2);
+}
+
+/* ----- Test 1c: transport error, then success -> window completes --------- */
+
+/* A single window whose page fails once with a TRANSPORT error and succeeds on
+ * retry must complete normally (watermark advances) -- the retry, not just
+ * eventual failure, is what NVD's routine timeouts require. The fixture scripts
+ * TWO responses for the SAME page: connection 1 sends nothing (CURLE_GOT_
+ * NOTHING), connection 2 is a normal 200. With max_retries=1 the fetch layer
+ * retries and succeeds. If the retry did NOT happen, the fixture's second
+ * accept() never returns and pthread_join() below hangs -- a hang is the
+ * regression signal, a clean pass means the retry fired. */
+static void test_transport_error_then_success_completes_window(void) {
+    static const char *const WATERMARK = "1999-04-01T00:00:00.000Z";
+    static const char *const NOW = "1999-05-01T00:00:00.000Z"; /* 30 days: one window */
+
+    uint16_t port = 0;
+    int listen_fd = bind_ephemeral(&port);
+    fixture_t fx = {.listen_fd = listen_fd};
+    fx.count = 2;
+    fx.responses[0] = NULL; /* transport failure on attempt 0 */
+    fx.response_lens[0] = 0;
+    fx.responses[1] = http_response("HTTP/1.1 200 OK", EMPTY_PAGE_BODY, &fx.response_lens[1]);
+
+    pthread_t th;
+    CYTADEL_ASSERT(pthread_create(&th, NULL, fixture_main, &fx) == 0);
+
+    sqlite3 *h = NULL;
+    cytadel_db_t *db = fresh_migrated_db(&h);
+    set_nvd_watermark(h, WATERMARK, -1);
+
+    char url[64];
+    cytadel_nvd_fetch_config_t cfg;
+    make_cfg(&cfg, url, sizeof(url), port);
+    cfg.max_retries = 1; /* one retry -> the second (200) response is reached */
+
+    cytadel_nvd_catchup_counts_t counts;
+    cytadel_nvd_catchup_status_t st = cytadel_nvd_catchup(db, &cfg, NOW, &counts);
+    CYTADEL_ASSERT_EQ(st, CYTADEL_NVD_CATCHUP_OK);
+    CYTADEL_ASSERT_EQ(counts.windows_completed, 1);
+
+    pthread_join(th, NULL);
+    /* Both connections were for the SAME window (a retry, not a new window). */
+    assert_request_window(fx.captured_requests[0], WATERMARK, NOW);
+    assert_request_window(fx.captured_requests[1], WATERMARK, NOW);
 
     char wm1[64];
     read_nvd_watermark(h, wm1, sizeof(wm1));
@@ -714,7 +867,9 @@ int main(void) {
     sa.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &sa, NULL);
 
-    test_no_watermark_single_bulk_load_window();
+    test_no_watermark_bulk_load_chunked_from_epoch();
+    test_bulk_transport_failure_resumes_from_watermark();
+    test_transport_error_then_success_completes_window();
     test_watermark_under_120_days_one_window();
     test_watermark_300_days_three_windows();
     test_midcatchup_failure_leaves_watermark_at_last_good_window();
