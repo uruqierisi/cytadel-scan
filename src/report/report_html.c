@@ -944,11 +944,18 @@ static const char *const CYTADEL_REPORT_CSS_CHUNKS[] = {
     "color: var(--cytadel-text); margin: 0; padding: 0; }\n"
     ".cover { background: var(--cytadel-primary); color: #fff; padding: 4rem 2rem; text-align: center; }\n"
     ".cover .brand { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }\n"
-    /* Circular badge: the logo is a red sphere on a solid-black JPG background.
-     * border-radius:50% clips it to a circle so its black background never
-     * shows as a square -- seamless on the dark screen cover AND on the white
-     * ink-friendly print cover (reads as a red-sphere-in-black-circle mark). */
-    ".cover .logo { width: 120px; height: 120px; border-radius: 50%; display: block; }\n"
+    /* Circular badge: the logo is a red sphere on a solid-black JPG background
+     * (verified: pure #000 out to the circle's rim, red sphere centered).
+     * border-radius:50% clips the square frame to a circle so the black never
+     * shows as a square; the near-black cover (--cytadel-primary #0b0e14)
+     * nearly matches the logo's #000 ground, so the black reads as a seamless
+     * dark panel rather than a clashing block. A 2px accent ring (box-shadow,
+     * so it adds no layout box and needs no box-sizing) gives the badge a
+     * defined, on-brand edge on the dark screen cover; on the white print cover
+     * the black disc already defines it (box-shadow is normally dropped in
+     * print, which is fine here -- the disc carries the edge there). */
+    ".cover .logo { width: 120px; height: 120px; border-radius: 50%; display: block; "
+    "box-shadow: 0 0 0 2px var(--cytadel-accent); }\n"
     ".cover .wordmark { font-size: 2.5rem; font-weight: 700; letter-spacing: 0.35em; "
     "padding-left: 0.35em; color: var(--cytadel-accent); }\n"
     ".cover h1 { font-size: 1.5rem; letter-spacing: 0.2em; margin-top: 1rem; }\n"
