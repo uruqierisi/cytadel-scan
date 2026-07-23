@@ -28,7 +28,7 @@
  * separately `#include <sqlite3.h>` itself (reachable via the
  * cytadel_sqlite3 target's public include directory -- see
  * third_party/sqlite/CMakeLists.txt) -- exactly the same split
- * db-schema.md SS9 already assumes for the engine work/the plugin work's own query code.
+ * db-schema.md SS9 already assumes for the engine's and plugins' own query code.
  *
  * Concurrency / ownership model: this module opens exactly one connection
  * per cytadel_db_open() call and does not pool or share connections across
@@ -100,7 +100,7 @@ const char *cytadel_db_status_to_string(cytadel_db_status_t status);
  *                                        real on-disk path that fails to
  *                                        report back "wal" logs a WARN
  *                                        (db-schema.md flags exactly this
- *                                        case for the ops work: no
+ *                                        operational case: no
  *                                        CIFS/NFS-mounted DB path).
  *   3. PRAGMA synchronous = NORMAL;   -- the documented safe durability/
  *                                        perf tradeoff under WAL.

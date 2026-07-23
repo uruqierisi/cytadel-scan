@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------ *
- * Step 3/4: the mandatory-DB gate (the mandatory authorization-gate rule's durable half).
+ * Step 3/4: the mandatory-DB gate (the authorization gate's durable half).
  * ------------------------------------------------------------------ */
 
 typedef enum {
@@ -57,7 +57,7 @@ const char *cytadel_scan_gate_status_to_string(cytadel_scan_gate_status_t status
 
 /* Opens `db_path` (creating the file if it does not exist), migrates it to
  * the latest schema version, and creates the durable `scans` row (the
- * mandatory-authorization-gate confirmation record, the mandatory authorization-gate rule) --
+ * mandatory-authorization-gate confirmation record) --
  * db-schema.md SS6/SS9's "Scan authorization + creation", verbatim via
  * cytadel_scan_create(). This function takes no target list, port range, or
  * scan-options argument of any kind -- structurally, it cannot expand a

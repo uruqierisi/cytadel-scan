@@ -2,7 +2,7 @@
 
 **Status: PLAN, not the build itself.** This describes how the CMake
 build will be structured for Milestone 1 onward. No `CMakeLists.txt` is
-written yet. `the engine work` implements against this plan; deviations should
+written yet. The engine implementation follows this plan; deviations should
 be called out and, if structural, reconciled back into this document.
 
 ---
@@ -46,7 +46,7 @@ the "many small files, high cohesion" style already used in the repo
 scaffold rather than one monolithic top-level file that lists every
 source.
 
-**Observation for `the engine work` to confirm**: `src/cli` and `src/log` have
+**Observation to confirm**: `src/cli` and `src/log` have
 no corresponding `include/cytadel/cli/` or `include/cytadel/log/`
 directory in the current scaffold. That appears intentional —
 `src/cli` is the executable entry point (`main()`), which by definition
@@ -69,8 +69,8 @@ log/` needs to be created.
 | Dependency | Hard/Optional | Discovery mechanism | Imported target | Notes |
 |---|---|---|---|---|
 | OpenSSL | Hard | `find_package(OpenSSL REQUIRED)` | `OpenSSL::SSL`, `OpenSSL::Crypto` | Bundled `FindOpenSSL.cmake` has provided these imported targets since CMake 3.4. Used by `net/` (TLS inspection) and possibly `db/`/`net/` for hashing. |
-| SQLite3 | Hard | `find_package(SQLite3 REQUIRED)` | `SQLite3::SQLite3` | Bundled `FindSQLite3.cmake` has provided this imported target since CMake 3.14. Used by `db/` for the local vuln DB (`the schema work`'s schema). |
-| Lua 5.4 | Hard | `find_package(Lua 5.4 REQUIRED)`, version-checked | **No imported target** (see note below) | Bundled `FindLua.cmake` sets `LUA_INCLUDE_DIR`, `LUA_LIBRARIES`, `LUA_VERSION_STRING`, `LUA_FOUND` but — unlike OpenSSL/CURL/SQLite3 — does **not** create an `IMPORTED` target as of current CMake releases. We wrap it ourselves: after `find_package`, verify `LUA_VERSION_STRING` starts with `5.4` (the module can pick up a stray Lua 5.1/5.3 installed on the same system if not version-pinned), then `add_library(Lua::Lua INTERFACE IMPORTED)` and set its `INTERFACE_INCLUDE_DIRECTORIES` / `INTERFACE_LINK_LIBRARIES` from `LUA_INCLUDE_DIR` / `LUA_LIBRARIES` so the rest of the build links against `Lua::Lua` consistently with every other dependency. `the engine work` should re-verify this against the actual CMake version installed in CI before relying on it. |
+| SQLite3 | Hard | `find_package(SQLite3 REQUIRED)` | `SQLite3::SQLite3` | Bundled `FindSQLite3.cmake` has provided this imported target since CMake 3.14. Used by `db/` for the local vuln DB (the local schema). |
+| Lua 5.4 | Hard | `find_package(Lua 5.4 REQUIRED)`, version-checked | **No imported target** (see note below) | Bundled `FindLua.cmake` sets `LUA_INCLUDE_DIR`, `LUA_LIBRARIES`, `LUA_VERSION_STRING`, `LUA_FOUND` but — unlike OpenSSL/CURL/SQLite3 — does **not** create an `IMPORTED` target as of current CMake releases. We wrap it ourselves: after `find_package`, verify `LUA_VERSION_STRING` starts with `5.4` (the module can pick up a stray Lua 5.1/5.3 installed on the same system if not version-pinned), then `add_library(Lua::Lua INTERFACE IMPORTED)` and set its `INTERFACE_INCLUDE_DIRECTORIES` / `INTERFACE_LINK_LIBRARIES` from `LUA_INCLUDE_DIR` / `LUA_LIBRARIES` so the rest of the build links against `Lua::Lua` consistently with every other dependency. This should be re-verified against the actual CMake version installed in CI before relying on it. |
 | libcurl | Hard | `find_package(CURL REQUIRED)` | `CURL::libcurl` | Bundled `FindCURL.cmake` has provided this imported target since CMake 3.12; curl's own `CURLConfig.cmake` (if `find_package(CURL CONFIG)` resolves instead) also exports the same target name. Used by `net/` for `http_get` and any outbound HTTP(S) probing that isn't raw-socket. |
 | pthreads | Hard | `set(THREADS_PREFER_PTHREAD_FLAG ON)` then `find_package(Threads REQUIRED)` | `Threads::Threads` | Used by `core/` for the per-host worker pool. |
 | libpcap | **Optional** | No bundled CMake `FindPCAP` module exists. Try `pkg_check_modules(PCAP IMPORTED_TARGET libpcap)` first (modern libpcap ≥ 1.9 ships a `libpcap.pc`); if that fails, fall back to a hand-written `cmake/FindPCAP.cmake` doing `find_path(PCAP_INCLUDE_DIR pcap.h)` / `find_library(PCAP_LIBRARY NAMES pcap)` and wrapping the result in `PCAP::PCAP` (`INTERFACE IMPORTED`, matching the same target-name convention as the other deps). | `PCAP::PCAP` | Optional: if not found, `net/` compiles with `CYTADEL_HAVE_PCAP=0` and the port-scanner falls back to a plain TCP-connect scan instead of a raw-socket SYN scan. This also covers the case where pcap is *present* but the process lacks `CAP_NET_RAW`/root at runtime — that is a **runtime** fallback check in `net/`, not a build-time one; the build only decides whether the raw-socket code path is compiled in at all. |
@@ -131,7 +131,7 @@ General dependency policy:
     source list consumed by the top-level `libcytadel` target (exact
     choice — one big `add_library(cytadel STATIC ...)` aggregating
     per-module `target_sources()` calls, vs. one static lib per module
-    linked together — is an implementation detail `the engine work` decides at
+    linked together — is an implementation detail decided at
     Milestone 1 kickoff; either is consistent with this plan as long as
     the public headers stay under `include/cytadel/<module>/`).
 - **`cytadel-scan` (executable)** — `src/cli/*.c` (including `main()`)
@@ -160,7 +160,7 @@ General dependency policy:
   against `libcytadel`), and each is registered individually with
   `add_test()`. This keeps failures isolated (one crashing test binary
   doesn't take down the whole suite) and matches the "many small files"
-  convention. `the engine work` should revisit this choice if the suite grows
+  convention. This choice should be revisited if the suite grows
   large enough that a shared-process test runner becomes worthwhile.
 
 ---
@@ -176,23 +176,23 @@ General dependency policy:
   `set_tests_properties(<test-name> PROPERTIES LABELS "unit")` (or
   `"plugin"` / `"integration"`), so `ctest -L unit` / `-L plugin` /
   `-L integration` can run subsets independently — matters because
-  integration tests likely need the Docker test target (`the ops work`)
+  integration tests likely need the Docker test target
   and shouldn't block a fast local `ctest -L unit` loop.
 - `tests/plugins/` tests exercise the Lua plugin loader/scheduler and
   stock plugins against a fake/mock KB and mock network layer (owned by
-  `the plugin work` + `the engine work` jointly) — these are still C test executables
+  the plugin and engine layers jointly) — these are still C test executables
   (embedding the Lua VM the same way the engine does) that load a
   `.lua` file from `plugins/` or a `tests/plugins/fixtures/` directory,
   not a separate non-CTest harness.
 - `tests/integration/` tests that require a live network target (the
-  Docker-based vulnerable test target owned by `the ops work`) are
+  Docker-based vulnerable test target) are
   gated behind `option(CYTADEL_ENABLE_INTEGRATION_TESTS "Run tests that
   require the Docker test target" OFF)` so a plain `ctest` run in an
   environment without Docker doesn't fail on unavailable infrastructure;
   CI enables it explicitly where Docker is available.
 - A plain `ctest --output-on-failure` (with `CYTADEL_ENABLE_INTEGRATION_
-  TESTS=OFF`) is the Milestone-1 baseline gate before the security review
-  review, per the project's engineering policy's "each must compile, pass its tests" rule.
+  TESTS=OFF`) is the Milestone-1 baseline gate before the security
+  review, per the project's "each must compile, pass its tests" rule.
 
 ---
 
@@ -227,14 +227,14 @@ tests/unit/
 ```
 
 All directories above already exist (currently empty except for
-top-level `.env.example`, `.gitignore`, the project's engineering policy). This plan does not
+top-level `.env.example`, `.gitignore`). This plan does not
 introduce any new top-level directory; `cmake/` already exists and is
 where `FindPCAP.cmake`, `CompilerWarnings.cmake`, and `Sanitizers.cmake`
 will live per §1/§3 above.
 
 ---
 
-## 7. Open items for `the engine work` to confirm at Milestone 1 kickoff
+## 7. Open items to confirm at Milestone 1 kickoff
 
 1. Verify `FindLua.cmake`'s imported-target behavior (§2) against the
    actual CMake version pinned for this project/CI — if a newer CMake

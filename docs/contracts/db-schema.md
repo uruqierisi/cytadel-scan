@@ -2,7 +2,7 @@
 
 **Status:** FROZEN at Milestone 0. This is a design/contract document, not an implementation.
 Any change after this point requires an explicit stop-and-ask per the project's engineering policy. Downstream
-agents (the engine work for the engine, the plugin work for plugins, the ops work for sync jobs) build
+consumers (the engine, the plugin layer, and the sync jobs) build
 against this contract as-is.
 
 **Engine:** SQLite 3.35.0+ (required for `UPSERT ... RETURNING`, used by the sync writer to
@@ -39,7 +39,7 @@ PRAGMA foreign_keys = ON;      -- OFF by default per-connection; must be set eve
 PRAGMA journal_mode = WAL;     -- one-time, persists in the DB file; set on first open.
                                 -- Lets the scan engine read while the sync job writes.
                                 -- Requires the DB file to live on a local filesystem
-                                -- (flag for the ops work: no CIFS/NFS-mounted DB path in the
+                                -- (operational note: no CIFS/NFS-mounted DB path in the
                                 -- Docker test target).
 PRAGMA synchronous = NORMAL;   -- safe durability/perf tradeoff under WAL.
 PRAGMA busy_timeout = 5000;    -- avoid SQLITE_BUSY races between the scan engine (reader)
@@ -434,7 +434,7 @@ INSERT OR IGNORE INTO sync_state (feed, status, total_records) VALUES ('epss', '
 `WITHOUT ROWID`: 3 rows total, PK-only access (`UPDATE sync_state SET ... WHERE feed = ?`), no
 secondary indexes.
 
-**NVD delta-sync procedure this table supports** (binding on the sync writer, the ops work /
+**NVD delta-sync procedure this table supports** (binding on the sync writer /
 whichever component runs the scheduled sync):
 
 1. Read `last_mod_watermark` for `feed = 'nvd'`. If `NULL`, this is the initial bulk load —
@@ -451,7 +451,7 @@ whichever component runs the scheduled sync):
 
 ---
 
-## 9. Query pattern reference (parameterized; illustrative for the engine work / the plugin work)
+## 9. Query pattern reference (parameterized; illustrative for the engine and plugin layers)
 
 All statements are prepared with `?` bound parameters. **Never string-concatenate a CVE ID,
 host, version string, or any other external/detected value into SQL text.**
@@ -596,7 +596,7 @@ ORDER BY host, port, severity DESC;
    detection code (engine C and/or Lua plugins) must resolve a parsed banner (e.g.
    `"OpenSSH_7.2p2"`) into this triple before querying `cve_cpe_matches` — that resolution
    (banner keyword → CPE-dictionary vendor/product) is a plugin-api/detection-rules concern,
-   *not* something this schema provides. Flag for the plugin work/plugin-api author.
+   *not* something this schema provides. Flag for the plugin-API layer.
 2. **`vendor` and `product` are stored lowercase**, matching the CPE 2.3 spec's own casing
    rule. Callers must lowercase their detected vendor/product before querying
    `idx_cpe_vendor_product` / `idx_cpe_product` — there are no functional `lower()` indexes,
@@ -627,5 +627,5 @@ ORDER BY host, port, severity DESC;
    generator, CLI tools) — it is not persisted in the database file and defaults to `OFF`.
    Forgetting it silently disables every `ON DELETE CASCADE`/`SET NULL` and FK integrity check
    in this schema.
-9. **WAL mode requires a local filesystem** for the DB file — flagged for the ops work when
+9. **WAL mode requires a local filesystem** for the DB file — flagged for the sync/deployment layer when
    wiring the Docker test target / any future deployment.

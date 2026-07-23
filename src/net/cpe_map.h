@@ -12,7 +12,7 @@
  * write CPE/<port> once a product+version is confidently parsed out of a
  * banner or HTTP `Server:` header.
  *
- * IMPORTANT (flagged for M7/the schema work): the vendor/product tokens in
+ * IMPORTANT (flagged for M7 / the CVE-matching layer): the vendor/product tokens in
  * cpe_map.c's rule table are a best-effort starting point for Milestone 4
  * detection, not a validated extract from the authoritative NVD CPE
  * dictionary -- db-schema.md §10.1 explicitly calls this "the
@@ -21,7 +21,7 @@
  * DB/CVE ingestion work. Nothing here queries a CVE database or performs
  * any matching -- this file only ever WRITES a CPE/<port> KB fact; the
  * CVE-matching consumer of that fact is engine-side C in a future
- * milestone (kb-schema.md §7.7's "This is the join key the schema work's schema
+ * milestone (kb-schema.md §7.7's "This is the join key the schema
  * must index on").
  *
  * Kept private to src/net (same-directory quote-include). */

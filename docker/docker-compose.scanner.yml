@@ -2,7 +2,7 @@
 #
 # Adds the REAL cytadel-scan container to the Phase-1 vulnerable test
 # target's topology, WITHOUT modifying docker-compose.yml (which stays the
-# Phase-1 artifact exactly as the ops work shipped it). Use together with
+# Phase-1 artifact exactly as originally built in Phase 1). Use together with
 # the base file:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.scanner.yml <cmd>

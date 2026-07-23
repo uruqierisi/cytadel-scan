@@ -11,7 +11,7 @@
  * module persists into that schema exactly, it does not alter it) into the
  * cves / cve_cpe_matches / sync_state tables.
  *
- * PRIME DIRECTIVE (project policy, this milestone's task brief): the input is
+ * PRIME DIRECTIVE (the project policy, this milestone's task brief): the input is
  * hostile. NVD 2.0 JSON is untrusted -- every field may be absent, null,
  * the wrong type, empty, oversized, or duplicated; arrays may be huge or
  * truncated mid-element; the document may be truncated mid-page. ONE bad
@@ -43,7 +43,7 @@ extern "C" {
  * of how many cpeMatch entries the (untrusted) input actually contains.
  * Real NVD CVEs rarely carry more than a few dozen CPE match rows even for
  * heavily-affected products; this is purely a hostile-input safety valve
- * (project policy: "never trust a length or count from the input to size an
+ * (the project policy: "never trust a length or count from the input to size an
  * allocation without bounding it" -- generalized here to "without bounding
  * the work done", since this module never allocates proportionally to an
  * untrusted count in the first place, walking cJSON's own already-parsed
@@ -56,7 +56,7 @@ extern "C" {
 
 /* Hard cap on the length (bytes) of the `description` column value this
  * module will ever store for one CVE -- an oversized NVD description is
- * clipped to this many bytes, never rejected outright (project policy: "clip any
+ * clipped to this many bytes, never rejected outright (the project policy: "clip any
  * string bound into a TEXT column to a sane max"). Exposed for the same
  * test-assertion reason as CYTADEL_NVD_MAX_CPE_PER_CVE above. */
 #define CYTADEL_NVD_DESC_MAX_LEN 4096

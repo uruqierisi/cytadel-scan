@@ -105,7 +105,7 @@ void cytadel_log_error(const char *fmt, ...);
 
 /* Emits a log line unconditionally, ignoring the configured minimum level
  * filter (g_min_level / --log-level) -- W1 hardening. Reserved for the
- * mandatory startup authorization-confirmation / refusal record (project policy
+ * mandatory startup authorization-confirmation / refusal record (the project policy
  * rule #2; docs/contracts/db-schema.md §6/§9's future `scans` row). That
  * record must never be silently dropped just because the operator raised
  * --log-level to warn/error; every other log function above is filterable

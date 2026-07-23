@@ -20,7 +20,7 @@
  * skip-and-log per bad record, per-field length caps, one BEGIN..COMMIT per
  * call, sync_state watermark update inside that same transaction).
  *
- * PRIME DIRECTIVE (project policy, this milestone's task brief): the input is
+ * PRIME DIRECTIVE (the project policy, this milestone's task brief): the input is
  * hostile. first.org's EPSS JSON is untrusted -- every field may be absent,
  * null, the wrong type, empty, oversized, or duplicated; `epss`/`percentile`
  * arrive as STRINGS (e.g. "0.00042") that must be defensively parsed to a

@@ -11,7 +11,7 @@
 # mirrors the same "logic vs. entry point" split build-plan.md already uses
 # for `cytadel` vs. `cytadel-scan`, applied one level down so
 # tests/unit/CMakeLists.txt can link the CLI logic without pulling in
-# main(). This is an the engine work implementation decision for Milestone 1, not
+# main(). This is an engine-side implementation decision for Milestone 1, not
 # spelled out by build-plan.md (which only discusses this split for
 # libcytadel as a whole).
 # Milestone 8 slice 5: report_cmd.c (the `cytadel-scan report` subcommand --

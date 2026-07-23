@@ -22,7 +22,7 @@
  * watermark update happens INSIDE that same transaction so it only ever
  * advances together with durably committed data.
  *
- * PRIME DIRECTIVE (project policy, this milestone's task brief): the input is
+ * PRIME DIRECTIVE (the project policy, this milestone's task brief): the input is
  * hostile. CISA's KEV JSON is untrusted -- every field may be absent, null,
  * the wrong type, empty, oversized, or duplicated; the document may be
  * truncated mid-file. ONE bad KEV record must never abort the whole ingest --

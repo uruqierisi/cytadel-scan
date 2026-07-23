@@ -10,7 +10,7 @@
 /* Milestone 8 slice 5: the `cytadel-scan report` CLI subcommand. Reads an
  * already-populated vuln DB (CYTADEL_DB_PATH) and renders one scan's
  * findings as HTML or JSON -- it never scans (no packet ever leaves the
- * host), so the mandatory authorization-gate rule's mandatory startup authorization gate does
+ * host), so the authorization gate does
  * NOT apply to this subcommand; main.c must route `report` to
  * cytadel_report_cmd_run() BEFORE reaching cytadel_cli_parse_args()/the
  * gate, never through them.

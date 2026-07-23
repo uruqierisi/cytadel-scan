@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
      * BEFORE cytadel_cli_parse_args() and BEFORE the mandatory startup
      * authorization gate below -- this subcommand only reads an
      * already-populated DB (CYTADEL_DB_PATH), it never scans (no packet
-     * ever leaves the host), so the mandatory authorization-gate rule's gate does not apply to
+     * ever leaves the host), so the authorization gate does not apply to
      * it and must never be reached on this path. Every other invocation
      * shape (including a bare positional target spec that happens to be
      * the literal string "report" -- vanishingly unlikely for a real
@@ -310,7 +310,7 @@ int main(int argc, char **argv) {
      * authorization gate below -- same reasoning as `report` immediately
      * above: this subcommand's only network activity is this HOST updating
      * its OWN local vuln DB from the public NVD API, it never scans or
-     * contacts any operator-specified target, so the mandatory authorization-gate rule's gate
+     * contacts any operator-specified target, so the authorization gate
      * does not apply to it and must never be reached on this path. */
     if (argc > 1 && strcmp(argv[1], "sync") == 0) {
         cytadel_sync_cmd_args_t sync_args;
@@ -412,7 +412,7 @@ int main(int argc, char **argv) {
                        operator_name, method_str, target_desc);
 
     /* M9 Phase 0, step 3/4: the DURABLE half of the authorization gate --
-     * open+migrate the vuln DB (mandatory: the mandatory authorization-gate rule requires a
+     * open+migrate the vuln DB (mandatory: the authorization-gate policy requires a
      * durable authorization record, and there is nowhere to put one without
      * a working DB), then create the `scans` row itself
      * (docs/contracts/db-schema.md §6/§9). This runs BEFORE target

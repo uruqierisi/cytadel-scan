@@ -75,7 +75,7 @@
  *     page" a property of the DB-interaction layer itself, not just the
  *     JSON-parsing layer above it.
  *
- * Post-slice-2 security review fixes (the security review round 1 -- 0 Critical,
+ * Post-slice-2 security review fixes (security-review round 1 -- 0 Critical,
  * 3 Warnings, applied here):
  *
  *   - W3 (treated as data-integrity CRITICAL): embedded-NUL PK collision on

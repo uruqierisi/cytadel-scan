@@ -4,8 +4,8 @@
 namespace for Milestone 1 onward. It is immutable during implementation —
 any change requires an explicit stop-and-ask per the project's engineering policy.
 
-Audience: `the engine work` (engine/KB store), `the plugin work` (plugin API + stock
-plugins), `the schema work` (CPE → CVE matching), `the report work`/`the docs work`
+Audience: the engine/KB store, the plugin layer (plugin API + stock
+plugins), the CPE→CVE matching layer, and the report/docs layers
 (reporting must read the same keys it documents).
 
 ---
@@ -53,7 +53,7 @@ plugins), `the schema work` (CPE → CVE matching), `the report work`/`the docs 
   that mirrors conventional short service names (`www`, `https`, `ssh`,
   `ftp`, `smb`, `rdp`, `telnet`, `smtp`, `pop3`, `imap`, `dns`, `snmp`,
   `mysql`, `postgresql`, `redis`, …). This vocabulary **must** be shared
-  verbatim with `the schema work`'s CPE-mapping table and `the plugin work`'s
+  verbatim with the CPE-mapping table and the plugin layer's
   service-detection plugin so that `Services/<token>/<port>` and CPE
   `part:vendor:product` mappings stay joinable. Extending the vocabulary
   requires updating this file.
@@ -272,7 +272,7 @@ one key per possible header.
 
 | Key | Type | Example | Writer | Typical Reader(s) | Notes |
 |---|---|---|---|---|---|
-| `CPE/<port>` | string | `CPE/22` = `"cpe:2.3:a:openbsd:openssh:9.6:*:*:*:*:*:*:*"` | service-detection (or a `plugin` that owns deep version parsing for its protocol, e.g. `ssh_banner.lua`) | the **engine's C-side DB-matching stage** (the sole CVE-matching authority — see below) | **This is the join key `the schema work`'s schema must index on.** CPE 2.3 formatted string built once version + product are confidently known; absent if the version could not be determined precisely enough for a safe CPE (avoid false CPEs from a bare banner guess). **CVE/CPE matching is done in the C engine, not in a Lua plugin** (reconciled with `plugin-api.md` §0): a plugin may *emit* a `cpe` hint via `report_vuln`, but the engine — using the single shared CPE-version comparator (`db-schema.md` §10.3) — is what queries `cve_cpe_matches` and enriches findings. There is no `cve_match.lua`; plugins never compare versions. |
+| `CPE/<port>` | string | `CPE/22` = `"cpe:2.3:a:openbsd:openssh:9.6:*:*:*:*:*:*:*"` | service-detection (or a `plugin` that owns deep version parsing for its protocol, e.g. `ssh_banner.lua`) | the **engine's C-side DB-matching stage** (the sole CVE-matching authority — see below) | **This is the join key the schema must index on.** CPE 2.3 formatted string built once version + product are confidently known; absent if the version could not be determined precisely enough for a safe CPE (avoid false CPEs from a bare banner guess). **CVE/CPE matching is done in the C engine, not in a Lua plugin** (reconciled with `plugin-api.md` §0): a plugin may *emit* a `cpe` hint via `report_vuln`, but the engine — using the single shared CPE-version comparator (`db-schema.md` §10.3) — is what queries `cve_cpe_matches` and enriches findings. There is no `cve_match.lua`; plugins never compare versions. |
 
 ### 7.8 Engine / scan metadata
 
@@ -298,7 +298,7 @@ one key per possible header.
 4. **OPEN (implementation-time, not a contract conflict).** The
    `<service>` token vocabulary (§2) must be emitted identically by the
    engine's service-detection stage and consumed identically by the
-   plugins; `the schema work`'s CVE matching keys on CPE `(vendor, product)`,
+   plugins; the CVE-matching layer keys on CPE `(vendor, product)`,
    which the detection layer maps from the service token — that mapping
    is a Milestone 4/7 detection-rules concern, tracked there.
 

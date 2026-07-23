@@ -87,7 +87,7 @@ static void test_level_filtering_writes_only_at_or_above_threshold(void) {
 }
 
 static void test_audit_bypasses_level_filter(void) {
-    /* W1 regression: the mandatory authorization audit trail (project policy
+    /* W1 regression: the mandatory authorization audit trail (the project policy
      * rule #2) must be recorded even when the operator has cranked
      * --log-level all the way up to error -- it is not just another
      * filterable INFO/ERROR line. */

@@ -167,7 +167,7 @@ fixed at four values.
 
 ---
 
-## 6. the security review checklist for any future caller
+## 6. Security-review checklist for any future caller
 
 **CPE-MATCH-CALLER-1 (Critical if violated).** For every call site of
 `cytadel_cpe_match_evaluate()`:

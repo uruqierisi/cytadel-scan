@@ -5,7 +5,7 @@ restate the frozen contracts under `docs/contracts/` — it says where each one 
 it. If this document and a contract ever disagree, the contract wins; if this document and the
 code disagree, the code wins (flag it).
 
-## Design posture (non-negotiable, the project's engineering policy)
+## Design posture (non-negotiable)
 
 1. **Detection only.** Every stage below inspects a version/banner/config/certificate/header a
    target already sends over a plain connection. Nothing writes to, authenticates against, or

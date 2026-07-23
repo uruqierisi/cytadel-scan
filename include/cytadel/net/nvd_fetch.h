@@ -72,7 +72,7 @@
  *      driver treats every non-OK status from this function as "this page
  *      failed, abort the window" -- see nvd_sync.h).
  *
- * SECRET HYGIENE (the secret-hygiene rule, this milestone's task brief): the NVD
+ * SECRET HYGIENE (project rule 4, this milestone's task brief): the NVD
  * API key is read via getenv(CYTADEL_NVD_API_KEY_ENV_VAR) ONLY inside
  * nvd_fetch.c's own request-building helper, exactly once per attempt, and
  * is bound directly into a `curl_slist` HTTP header ("apiKey: <value>") that
@@ -105,7 +105,7 @@ extern "C" {
  * CYTADEL_ prefix consistent with every other variable that file ships
  * (CYTADEL_DB_PATH, CYTADEL_NVD_API_URL, etc.) so an operator who copies
  * .env.example to .env and fills it in gets a working key, rather than one
- * silently read by nothing. the secret-hygiene rule / this milestone's task brief:
+ * silently read by nothing. Secret-hygiene policy / this milestone's task brief:
  * optional, never hardcoded, never logged. Exposed as a named constant
  * (rather than a string literal repeated at every call site) so a test can
  * assert against it and so there is exactly one place in this header
