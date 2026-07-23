@@ -60,6 +60,10 @@ plugins/     the stock *.lua detection plugins (see plugins/README.md)
 
 ## Build
 
+> **New here? Follow the step-by-step [Installation & Usage Guide](docs/INSTALL.md)** —
+> install deps, build, populate the CVE database, run an authorized scan, and read
+> the report, with troubleshooting. The condensed version follows.
+
 Linux-first, CMake. On a Debian/Ubuntu box:
 
 ```sh
@@ -128,6 +132,7 @@ must **never** be deployed, exposed, or reused outside the test harness.
 
 | Doc | What's in it |
 |---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | **Step-by-step install & usage guide** (start here) |
 | [AUTHORIZED_USE.md](AUTHORIZED_USE.md) | Detection-only posture, authorization requirement, legal notice |
 | [docs/architecture.md](docs/architecture.md) | Engine/plugin/DB/report architecture overview |
 | [docs/plugin-authoring.md](docs/plugin-authoring.md) | Writing new Lua detection plugins |
