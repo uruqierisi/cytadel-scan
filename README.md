@@ -64,15 +64,27 @@ plugins/     the stock *.lua detection plugins (see plugins/README.md)
 > install deps, build, populate the CVE database, run an authorized scan, and read
 > the report, with troubleshooting. The condensed version follows.
 
-Linux-first, CMake. On a Debian/Ubuntu box:
+Linux-first, CMake. On a Debian/Ubuntu box, run these in order:
 
 ```sh
-sudo apt-get install -y build-essential cmake pkg-config \
+# 1. Install the build dependencies
+sudo apt-get install -y build-essential cmake pkg-config git \
     liblua5.4-dev libssl-dev libcurl4-openssl-dev
 
+# 2. Get the source and STEP INTO the project folder (required — the next
+#    commands must run from inside the repo, not your home directory)
+git clone https://github.com/uruqierisi/cytadel-scan.git
+cd cytadel-scan
+
+# 3. Build (the binary lands at build/src/cli/cytadel-scan)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ```
+
+> **`CMake Error: source directory … does not contain CMakeLists.txt`?**
+> You skipped step 2 — you're running `cmake` from the wrong folder. `cmake -S .`
+> means "build the project in the *current* directory", so you must `cd
+> cytadel-scan` first.
 
 The build finds a system libcurl automatically. If you use a vendored prefix
 (e.g. a static build), point CMake at it with `-DCYTADEL_CURL_ROOT=/path`
