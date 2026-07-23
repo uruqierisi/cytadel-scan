@@ -1,0 +1,39 @@
+# docker/docker-compose.scanner.yml -- M9 Phase 2 overlay.
+#
+# Adds the REAL cytadel-scan container to the Phase-1 vulnerable test
+# target's topology, WITHOUT modifying docker-compose.yml (which stays the
+# Phase-1 artifact exactly as the ops work shipped it). Use together with
+# the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scanner.yml <cmd>
+#
+# (tests/integration/run_integration_test.sh does exactly this.)
+#
+# SECURITY / ISOLATION -- identical posture to every other service in
+# docker-compose.yml (see docker/README.md's "Isolation model"):
+#   - `scanner` joins ONLY `cytadel-test-net` (defined `internal: true` in
+#     the base file -- no route out to the host/LAN/internet).
+#   - No `ports:` mapping anywhere below -- the scanner has nothing to
+#     publish; it is a client, not a target.
+#   - `cytadel-scan-data` is a Docker-managed named volume (not a bind
+#     mount), so the container's own `chown cytadel:cytadel /data` (see
+#     scanner/Dockerfile) takes effect the first time the volume is
+#     populated, and the non-root `cytadel` user can read/write its own
+#     scan DB. `docker compose down -v` removes it, leaving nothing behind.
+#   - The image never runs privileged and adds no capabilities (no
+#     --cap-add=NET_RAW) -- see scanner/Dockerfile's own capability note.
+
+services:
+  scanner:
+    build:
+      context: ..
+      dockerfile: docker/scanner/Dockerfile
+    networks:
+      - cytadel-test-net
+    volumes:
+      - cytadel-scan-data:/data
+    environment:
+      - CYTADEL_DB_PATH=/data/cytadel-test.sqlite
+
+volumes:
+  cytadel-scan-data:

@@ -1,0 +1,5 @@
+SQLite amalgamation 3.53.3 (sqlite-amalgamation-3530300)
+Source: https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+License: public domain (https://www.sqlite.org/copyright.html)
+Vendored for Milestone 7. Only sqlite3.c / sqlite3.h / sqlite3ext.h are kept
+(the CLI shell.c is intentionally omitted). Compiled directly into libcytadel.

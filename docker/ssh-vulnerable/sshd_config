@@ -1,0 +1,28 @@
+# docker/ssh-vulnerable/sshd_config
+#
+# Disposable integration-test target. No real authentication path exists on
+# this box at all -- password auth is off, there are no user accounts with
+# passwords set, and PAM is disabled to avoid depending on the base image's
+# PAM stack inside a minimal container. This container exists solely to
+# present a real OpenSSH 8.9p1 version-exchange banner for
+# plugins/ssh_known_vulnerable_openssh.lua / ssh_version_disclosure.lua to
+# observe -- nothing ever authenticates against it.
+
+Port 22
+AddressFamily inet
+ListenAddress 0.0.0.0
+
+HostKey /etc/ssh/keys/ssh_host_rsa_key
+HostKey /etc/ssh/keys/ssh_host_ed25519_key
+
+PermitRootLogin no
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PrintMotd no
+Subsystem sftp internal-sftp

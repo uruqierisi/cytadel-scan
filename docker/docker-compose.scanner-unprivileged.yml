@@ -1,0 +1,106 @@
+# docker/docker-compose.scanner-unprivileged.yml -- M9 Phase 3 overlay.
+#
+# Adds TWO scanner services to the Phase-1 vulnerable test target's
+# topology, alongside (never replacing) docker-compose.scanner.yml's own
+# `scanner` service. Use together with the base file and this overlay:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scanner-unprivileged.yml <cmd>
+#
+# (tests/integration/run_unprivileged_fallback_test.sh does exactly this.)
+#
+# WHAT THIS PROVES (read this before changing either service below): M9
+# Phase 3's whole point is to observe, not assume, that
+# src/net/discovery.c's TCP-ping fallback actually fires when raw ICMP is
+# unavailable, AND that it does NOT fire (real ICMP is used instead) when
+# raw ICMP genuinely is available -- a test that would pass either way
+# proves nothing. That requires TWO different capability postures that
+# genuinely differ in observable behavior, which is why there are two
+# services here instead of one:
+#
+#   - `scanner-unprivileged`: the REAL scenario an operator depends on --
+#     built from the UNMODIFIED docker/scanner/Dockerfile (default
+#     CYTADEL_TEST_SETCAP_NET_RAW=0, i.e. exactly the same image Phase 2's
+#     `scanner` service already runs), with `cap_drop: [ALL]` added
+#     on top and no root anywhere. Empirically verified (see
+#     docker/scanner/Dockerfile's own updated CAPABILITIES note): this
+#     image is ALREADY raw-socket-incapable purely by virtue of running as
+#     non-root with no file capability on the binary -- `cap_drop: [ALL]`
+#     is deliberate defense-in-depth / explicit operator intent (this is
+#     what M9 Phase 3 was asked to add), not what actually flips the
+#     behavior for this particular image. Either way, this service must
+#     show src/net/discovery.c's "used TCP ping (fallback)" marker and
+#     must NOT show "used ICMP echo".
+#
+#   - `scanner-rawcapable`: a CONTRAST-ONLY / NEGATIVE-CONTROL service,
+#     never a production scenario. Built from the SAME
+#     docker/scanner/Dockerfile with `--build-arg
+#     CYTADEL_TEST_SETCAP_NET_RAW=1`, which applies `setcap
+#     cap_net_raw+ep` to the compiled cytadel-scan binary during the
+#     image build (see that Dockerfile's ARG comment for the full
+#     rationale and the empirical verification behind it). Deliberately
+#     does NOT set `cap_drop` -- Docker's default capability bounding set
+#     (which already includes CAP_NET_RAW) is left intact so the file
+#     capability can actually take effect. This is what lets a genuinely
+#     NON-ROOT, NON-PRIVILEGED process open a raw ICMP socket, so this
+#     service must show "used ICMP echo" and must NOT show "used TCP ping
+#     (fallback)" -- if it ever DID show the fallback marker, that would
+#     mean the fallback test above is not actually distinguishing the two
+#     capability postures (i.e. has no teeth), which is exactly the
+#     regression this contrast run exists to catch.
+#
+# SECURITY / ISOLATION -- identical posture to every other service in
+# docker-compose.yml (see docker/README.md's "Isolation model"):
+#   - Both services join ONLY `cytadel-test-net` (defined `internal: true`
+#     in the base file -- no route out to the host/LAN/internet).
+#   - No `ports:` mapping anywhere below -- neither scanner has anything to
+#     publish; both are clients, not targets.
+#   - Neither service runs `--privileged` or as root (uid 0) anywhere --
+#     `scanner-rawcapable`'s file-capability approach is specifically what
+#     lets it exercise raw ICMP WITHOUT ever needing root.
+#   - Each scanner gets its own Docker-managed named volume / DB path, kept
+#     entirely separate from Phase 2's `scanner`/`cytadel-scan-data` (never
+#     touched by this overlay) so the two milestones' test runs can never
+#     cross-contaminate each other's data.
+#   - `docker compose down -v` removes both named volumes, leaving nothing
+#     behind.
+
+services:
+  scanner-unprivileged:
+    build:
+      context: ..
+      dockerfile: docker/scanner/Dockerfile
+      # CYTADEL_TEST_SETCAP_NET_RAW defaults to "0" (see Dockerfile) --
+      # listed explicitly here anyway so the two services in this file
+      # visibly differ only in the one build arg + cap_drop, not by
+      # accident of whatever the Dockerfile's default happens to be.
+      args:
+        CYTADEL_TEST_SETCAP_NET_RAW: "0"
+    cap_drop:
+      - ALL
+    networks:
+      - cytadel-test-net
+    volumes:
+      - cytadel-scan-data-unprivileged:/data
+    environment:
+      - CYTADEL_DB_PATH=/data/cytadel-test-unprivileged.sqlite
+
+  scanner-rawcapable:
+    build:
+      context: ..
+      dockerfile: docker/scanner/Dockerfile
+      args:
+        CYTADEL_TEST_SETCAP_NET_RAW: "1"
+    # Deliberately NOT cap_drop here -- see header comment above. Docker's
+    # default capability bounding set (CAP_NET_RAW included) is left
+    # exactly as-is; this is a CONTRAST-ONLY negative-control image, never
+    # meant to represent a scenario an operator would deploy.
+    networks:
+      - cytadel-test-net
+    volumes:
+      - cytadel-scan-data-rawcapable:/data
+    environment:
+      - CYTADEL_DB_PATH=/data/cytadel-test-rawcapable.sqlite
+
+volumes:
+  cytadel-scan-data-unprivileged:
+  cytadel-scan-data-rawcapable:

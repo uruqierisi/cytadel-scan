@@ -1,0 +1,192 @@
+# Cytadel Scan -- CI (M9 Phase 4b).
+#
+# Two independent pieces:
+#
+#   1. `unit` -- a fast build+test matrix (Debug/-Werror, Release, ASan+UBSan,
+#      TSan), all four running only `ctest -L unit`. Every entry configures
+#      against SYSTEM dev packages (apt liblua5.4-dev/libssl-dev/
+#      libcurl4-openssl-dev), mirroring docker/scanner/Dockerfile's builder
+#      stage exactly -- see that Dockerfile's own header comment for why the
+#      system-dep path (not this project's WSL dev-environment vendored
+#      $HOME/lua-local / $HOME/curl-local workaround) is correct here: a
+#      clean GitHub runner has no vendored prefix, but does have apt.
+#   2. `integration` -- a SEPARATE job needing Docker (the GH ubuntu-latest
+#      runner ships Docker + the `docker compose` v2 plugin already). Runs
+#      the Phase-2 E2E scan + Phase-3 unprivileged-fallback integration
+#      tests, gated behind CYTADEL_ENABLE_INTEGRATION_TESTS + `-L
+#      integration` (tests/integration/CMakeLists.txt). Kept out of the
+#      `unit` matrix so a Docker hiccup never blocks the fast unit gate.
+#
+# SECRET HYGIENE: neither job needs, references, or can leak NVD_API_KEY --
+# the integration tests seed the local DB from a fixture SQL file
+# (tests/integration/fixtures/seed.sql), never a live NVD pull. No
+# `secrets.*` reference exists anywhere in this file, and none should ever
+# be added for a live sync here -- see packaging/README.md for where that
+# key actually belongs (an operator-supplied, root-only-readable systemd
+# EnvironmentFile, never CI).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Fast unit-test matrix: Debug/-Werror, Release, ASan+UBSan, TSan.
+  # Every entry is `ctest -L unit` only -- no Docker, no network target.
+  # ---------------------------------------------------------------------
+  unit:
+    name: unit (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The default gate: plain Debug build, warnings-as-errors.
+          - name: debug-werror
+            build_type: Debug
+            extra_cmake_flags: ""
+          # MANDATORY per this milestone's brief: Release just caught a
+          # use-after-free that Debug -O0 hid for the whole project's
+          # history -- this build type must run in CI, not just Debug.
+          - name: release
+            build_type: Release
+            extra_cmake_flags: ""
+          # ASan+UBSan (memory/UB bugs) -- mutually exclusive with TSan,
+          # see cmake/Sanitizers.cmake's own fatal-error guard.
+          - name: asan-ubsan
+            build_type: Debug
+            extra_cmake_flags: "-DCYTADEL_SANITIZE=ON"
+          # ThreadSanitizer (data races) -- mutually exclusive with
+          # CYTADEL_SANITIZE, see cmake/Sanitizers.cmake.
+          - name: tsan
+            build_type: Debug
+            extra_cmake_flags: "-DCYTADEL_TSAN=ON"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies (system packages)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config ca-certificates ccache \
+            liblua5.4-dev libssl-dev libcurl4-openssl-dev
+
+      - name: Cache ccache artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.name }}-
+
+      # Pre-seeds CYTADEL_CURL_INCLUDE_DIR/CYTADEL_CURL_LIBRARY on the cmake
+      # command line so the top-level CMakeLists.txt's find_path()/
+      # find_library() calls for those two cache variables become no-ops
+      # and resolve straight to the apt-installed system libcurl -- exactly
+      # what docker/scanner/Dockerfile's builder stage does, so this
+      # reproduces a known-good configuration rather than inventing a new
+      # one for CI.
+      - name: Configure (system deps, ${{ matrix.build_type }}${{ matrix.extra_cmake_flags != '' && format(', {0}', matrix.extra_cmake_flags) || '' }})
+        env:
+          CCACHE_DIR: /home/runner/.cache/ccache
+        run: |
+          CURL_LIB="$(find /usr/lib -name 'libcurl.so*' 2>/dev/null | sort | head -n1)"
+          if [ -z "$CURL_LIB" ]; then
+            echo "system libcurl.so not found" >&2
+            exit 1
+          fi
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCYTADEL_WERROR=ON \
+            -DBUILD_TESTING=ON \
+            -DCYTADEL_CURL_INCLUDE_DIR=/usr/include \
+            -DCYTADEL_CURL_LIBRARY="$CURL_LIB" \
+            ${{ matrix.extra_cmake_flags }}
+
+      - name: Build (-Werror clean)
+        env:
+          CCACHE_DIR: /home/runner/.cache/ccache
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run unit tests
+        run: ctest --test-dir build -L unit --output-on-failure
+
+  # ---------------------------------------------------------------------
+  # Docker-backed integration tests -- kept SEPARATE from the unit matrix
+  # above so a Docker/compose issue never gates the fast unit build.
+  # ---------------------------------------------------------------------
+  integration:
+    name: integration (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies (system packages)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config ca-certificates jq \
+            liblua5.4-dev libssl-dev libcurl4-openssl-dev
+
+      - name: Confirm Docker + compose plugin are available
+        run: |
+          docker --version
+          docker compose version
+
+      # -DCYTADEL_ENABLE_INTEGRATION_TESTS=ON is what makes
+      # tests/integration/CMakeLists.txt (and its two `docker compose`-driven
+      # CTest cases) exist at all -- OFF by default (see that file's own
+      # header comment), so this is the only job in this workflow that ever
+      # touches Docker.
+      - name: Configure (system deps, Release, integration tests enabled)
+        run: |
+          CURL_LIB="$(find /usr/lib -name 'libcurl.so*' 2>/dev/null | sort | head -n1)"
+          if [ -z "$CURL_LIB" ]; then
+            echo "system libcurl.so not found" >&2
+            exit 1
+          fi
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DCYTADEL_ENABLE_INTEGRATION_TESTS=ON \
+            -DCYTADEL_CURL_INCLUDE_DIR=/usr/include \
+            -DCYTADEL_CURL_LIBRARY="$CURL_LIB"
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      # No NVD_API_KEY / CYTADEL_NVD_API_KEY anywhere in this job: both
+      # integration tests (run_integration_test.sh,
+      # run_unprivileged_fallback_test.sh) seed the local vuln DB from
+      # tests/integration/fixtures/seed.sql, never from a live NVD pull, and
+      # `cytadel-scan sync` is never invoked by either script.
+      - name: Run integration tests (Docker compose up/scan/down)
+        run: ctest --test-dir build -L integration --output-on-failure
+
+      # Best-effort cleanup in case a failed assertion left containers/
+      # volumes behind -- both scripts already `trap cleanup EXIT` with
+      # `compose down -v --remove-orphans`, so this is a belt-and-braces
+      # second pass, not the primary teardown mechanism.
+      - name: Ensure Docker test resources are torn down
+        if: always()
+        run: |
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.scanner.yml down -v --remove-orphans || true
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.scanner-unprivileged.yml down -v --remove-orphans || true

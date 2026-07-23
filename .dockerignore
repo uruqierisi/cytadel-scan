@@ -1,0 +1,31 @@
+# Root .dockerignore -- keeps the Docker build context (docker/scanner/
+# Dockerfile builds with the repo root as its context, see
+# docker/docker-compose.scanner.yml) small and free of local build
+# artifacts, secrets, and generated data. Mirrors .gitignore's own patterns
+# for build/ and data/ directories.
+
+.git/
+.gitignore
+
+# Local out-of-tree CMake build directories (build-a, build-fetch, build-r,
+# build-fetch-asan, ...) -- never needed inside the Docker build context,
+# the scanner image builds fresh via its own cmake -S . -B build step.
+build/
+build*/
+cmake-build-*/
+
+# Vulnerability database / local runtime data -- never baked into an image.
+*.sqlite
+*.sqlite3
+*.db
+data/
+docker/scanner-data/
+
+# Secrets / local config.
+.env
+*.local.conf
+config/cytadel-scan.conf
+
+# Editor / OS cruft.
+.vscode/
+.idea/

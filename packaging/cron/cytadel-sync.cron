@@ -1,0 +1,35 @@
+# Cytadel Scan -- NVD sync, cron alternative for hosts with no systemd
+# (M9 Phase 4b). Prefer packaging/systemd/cytadel-sync.{service,timer} on
+# any host that has systemd -- this file is for the ones that don't.
+#
+# Install as an /etc/cron.d/ drop-in (NOT a per-user crontab -- this format
+# includes the run-as-user column, which per-user crontabs don't support):
+#   sudo install -m 0755 packaging/cron/cytadel-sync-cron-wrapper.sh /usr/local/sbin/cytadel-sync-cron-wrapper.sh
+#   sudo install -m 0644 packaging/cron/cytadel-sync.cron /etc/cron.d/cytadel-sync
+#
+# The wrapper script -- NOT this file -- is what reads
+# /etc/cytadel/cytadel.env (0600, root-only) and drops privileges to the
+# unprivileged `cytadel-sync` system user before ever exec'ing
+# cytadel-scan. The NVD API key is NEVER referenced on this crontab line,
+# and cron itself never sees it (only the wrapper's own `. "$ENV_FILE"`
+# does, while still running as root, for the sole purpose of exporting it
+# into the environment of the process it is about to drop privileges for).
+#
+# See packaging/README.md for the full setup (creating the `cytadel-sync`
+# system user, /var/lib/cytadel ownership, /etc/cytadel/cytadel.env).
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Route cron's own default "mail the output to root" behavior into a log
+# file instead (rotate it with logrotate -- see packaging/README.md) --
+# comment this out to fall back to local mail delivery if preferred.
+MAILTO=""
+
+# minute hour day-of-month month day-of-week user  command
+#
+# 03:17 daily -- a non-zero minute (not "0 3 * * *") is a lightweight,
+# static version of cytadel-sync.timer's RandomizedDelaySec=30m: it avoids
+# this host's sync landing on the exact top-of-hour instant a large batch
+# of other cron jobs (and other Cytadel deployments defaulting to the same
+# systemd-timer OnCalendar=daily convention) might also fire on.
+17 3 * * * root /usr/local/sbin/cytadel-sync-cron-wrapper.sh >> /var/log/cytadel-sync.log 2>&1

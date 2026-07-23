@@ -1,0 +1,1 @@
+vsFTPd 3.0.3 ready - Cytadel integration-test FTP service. Anonymous FTP login is permitted.

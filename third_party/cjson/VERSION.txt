@@ -1,0 +1,4 @@
+cJSON 1.7.18 (github.com/DaveGamble/cJSON, tag v1.7.18)
+Files: cJSON.c, cJSON.h only. License: MIT.
+Vendored for Milestone 7 slice 2 (defensive NVD 2.0 JSON parsing).
+Compiled as an isolated target (no engine -Werror), like third_party/sqlite.

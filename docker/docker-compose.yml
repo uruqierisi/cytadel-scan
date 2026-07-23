@@ -1,0 +1,103 @@
+# Cytadel Scan -- disposable, detection-only integration-test target
+# (M9 Phase 1). See README.md in this directory for the full services ->
+# plugin-findings map, the isolation model, and how to bring this up/down.
+#
+# SECURITY / ISOLATION (non-negotiable for this target):
+#   - Every vulnerable-target service sits on `cytadel-test-net`, which is
+#     `internal: true` -- Docker gives it NO route to the outside world at
+#     all (no default gateway out of the network), independent of anything
+#     below.
+#   - NOT ONE service below publishes a host port (no top-level `ports:`
+#     anywhere in this file). `expose:` only documents which container
+#     ports exist; it does not publish them to the host.
+#   - `sidecar` is the ONLY other thing on this network: a small toolbox
+#     container (curl/openssl/nc) standing in for where the Phase 2
+#     Cytadel scanner container will attach and reach every target by
+#     its Compose service (DNS) name. It is disposable test tooling, not
+#     part of the vulnerable target itself.
+
+networks:
+  cytadel-test-net:
+    internal: true
+
+services:
+  # -- FTP: real vsftpd 3.0.3, banner advertises anonymous access, plain
+  #    (unencrypted) control channel. See ftp/Dockerfile.
+  ftp:
+    build: ./ftp
+    networks:
+      - cytadel-test-net
+    expose:
+      - "21"
+
+  # -- SSH: real, unmodified OpenSSH 8.9p1 from Ubuntu 22.04's own archive
+  #    (regreSSHion / CVE-2024-6387 band). See ssh-vulnerable/Dockerfile.
+  ssh-vulnerable:
+    build: ./ssh-vulnerable
+    networks:
+      - cytadel-test-net
+    expose:
+      - "22"
+
+  # -- SSH: SYNTHETIC banner-only stub advertising SSH protocol 1.99 (dual
+  #    SSH-1/SSH-2 backward compat). NOT a real SSH-1 daemon -- see
+  #    ssh-sshv1-stub/Dockerfile for why a real one isn't reproducible.
+  ssh-sshv1-stub:
+    build: ./ssh-sshv1-stub
+    networks:
+      - cytadel-test-net
+    expose:
+      - "22"
+
+  # -- Telnet: real BusyBox telnetd, genuine cleartext IAC negotiation.
+  telnet:
+    build: ./telnet
+    networks:
+      - cytadel-test-net
+    expose:
+      - "23"
+
+  # -- Web: nginx 1.18.0 (real, EOL). :80 plaintext (directory listing,
+  #    missing security headers, insecure cookie, version disclosure).
+  #    :443 TLS (expired, self-signed, mismatched-CN cert).
+  web:
+    build: ./web
+    networks:
+      - cytadel-test-net
+    expose:
+      - "80"
+      - "443"
+
+  # -- TLS-legacy: source-compiled OpenSSL 1.1.1w s_server (see
+  #    tls-legacy/Dockerfile for why this had to be built from source
+  #    rather than apt/apk-installed). :8443 = self-signed + mismatched-CN
+  #    + MD5-signed + 1024-bit-RSA + SSLv3/TLSv1-only + RC4/3DES-only cert.
+  #    :993 = self-signed + mismatched-CN + not-yet-valid cert.
+  tls-legacy:
+    build: ./tls-legacy
+    networks:
+      - cytadel-test-net
+    expose:
+      - "8443"
+      - "993"
+
+  # -- Exposed cleartext DB: Redis, no requirepass (weak-by-design, not a
+  #    real credential), reachable on its conventional port.
+  db:
+    image: redis:7.2-alpine@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - cytadel-test-net
+    expose:
+      - "6379"
+
+  # -- Verification/toolbox sidecar. NOT part of the vulnerable target --
+  #    see the header comment above. `docker compose run --rm sidecar sh`
+  #    or `docker compose exec sidecar sh` to drive the proof commands in
+  #    README.md.
+  sidecar:
+    build: ./sidecar
+    networks:
+      - cytadel-test-net
+    tty: true
+    stdin_open: true

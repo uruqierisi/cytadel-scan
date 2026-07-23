@@ -1,0 +1,7 @@
+# docker/scanner/.dockerignore -- this Dockerfile builds with the REPO ROOT
+# as its context (docker/docker-compose.scanner.yml sets `context: ..`), so
+# the root .dockerignore (not this file) is what actually governs what gets
+# sent to the daemon. This file exists only so a stray `docker build
+# docker/scanner` (context = this directory) run by habit doesn't send
+# anything unexpected -- there is nothing here to exclude beyond itself.
+Dockerfile

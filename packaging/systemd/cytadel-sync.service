@@ -1,0 +1,156 @@
+# Cytadel Scan -- NVD vulnerability-database sync (M9 Phase 4b).
+#
+# Runs `cytadel-scan sync` -- the DETECTION-ONLY, target-free subcommand that
+# catches this host's LOCAL vulnerability database up to the public NVD CVE
+# feed (src/cli/sync_cmd.h). It never scans, probes, or contacts any
+# operator-specified target, and therefore never touches the mandatory
+# startup authorization gate (the mandatory authorization-gate rule) -- see main.c's own comment
+# for why `sync` is dispatched before that gate exists at all.
+#
+# Triggered by cytadel-sync.timer (same directory) -- do not `systemctl
+# enable` this .service directly; enable the .timer instead (see
+# packaging/README.md for the full install/enable walkthrough).
+#
+# KEY HYGIENE (the main security concern for an unattended job like this):
+#   - CYTADEL_NVD_API_KEY and CYTADEL_DB_PATH come ONLY from the
+#     EnvironmentFile= below -- a root-only-readable (0600) file at
+#     /etc/cytadel/cytadel.env. systemd (running as root/PID 1) reads that
+#     file itself and injects the values into this unit's process
+#     environment; the spawned `cytadel-scan` process never opens the file,
+#     so its 0600 permission bit is all that ever needs to protect it.
+#   - The key is NEVER placed inline in this unit, NEVER passed as a CLI
+#     argument (which would be visible to any local user via `ps`/`/proc`),
+#     and NEVER logged: `cytadel-scan sync`'s own stdout only ever prints
+#     window/page/CVE counts (src/cli/sync_cmd.c), and every log line that
+#     mentions the key anywhere in this codebase prints the ENV VAR NAME
+#     only, never its value (verified during the M7 NVD-fetch security
+#     review -- see MEMORY.md).
+#
+# HARDENING (this runs unattended, on a schedule, with network access):
+#   DynamicUser=yes creates an ephemeral, unprivileged, non-root UID/GID for
+#   this unit alone (no `useradd` step required) and implies a strict
+#   default sandbox (ProtectSystem=strict, ProtectHome=read-only,
+#   NoNewPrivileges=yes, RestrictSUIDSGID=yes, RemoveIPC=yes, PrivateTmp=yes)
+#   -- the explicit directives below restate/extend that sandbox so the
+#   posture is documented here rather than only implied by DynamicUser's
+#   defaults, and additionally lock down capabilities, namespaces, and
+#   syscalls this job never needs.
+#
+#   This job's ACTUAL required capability set is exactly:
+#     - outbound HTTPS (NVD's API over TLS) -- AF_INET/AF_INET6 sockets only,
+#       no raw sockets, no listening socket at all.
+#     - read the EnvironmentFile (handled by systemd itself, not this
+#       process -- see above).
+#     - read+write CYTADEL_DB_PATH under the StateDirectory below.
+#   It does NOT scan/probe any target and does NOT need CAP_NET_RAW or any
+#   other Linux capability -- CapabilityBoundingSet= is emptied out entirely.
+
+[Unit]
+Description=Cytadel Scan -- NVD vulnerability database sync
+# See packaging/README.md in this project's source tree for the full
+# install/enable walkthrough (no Documentation= URI set here -- this
+# project does not mandate any single deployment path/URL for that file).
+# Real network connectivity (not just "an interface exists") before the
+# first sync attempt of a boot -- avoids a guaranteed-fail DNS/TLS attempt
+# racing interface bring-up. Requires network-online.target's provider
+# (systemd-networkd-wait-online.service or NetworkManager-wait-online.service)
+# to be enabled on the host -- see packaging/README.md.
+After=network-online.target
+Wants=network-online.target
+# ConditionACPower is deliberately NOT set -- a laptop/on-battery host should
+# still keep its local vuln DB current.
+
+[Service]
+Type=oneshot
+
+# --- Identity -------------------------------------------------------------
+# No persistent system user to create/maintain -- systemd allocates and
+# tears down an ephemeral, non-root UID/GID for the lifetime of each run.
+DynamicUser=yes
+# Grants exactly one persistent, writable directory: /var/lib/cytadel,
+# owned by the dynamic UID, created on first start, mode 0750. This is
+# where CYTADEL_DB_PATH (set in the EnvironmentFile below) must live.
+StateDirectory=cytadel
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/cytadel
+
+# --- Secrets / configuration -----------------------------------------------
+# Root-only-readable (0600), NEVER world/group readable. Provides
+# CYTADEL_NVD_API_KEY and CYTADEL_DB_PATH -- see
+# packaging/cytadel.env.example for the template (a DUMMY placeholder key,
+# never a real one) and packaging/README.md for the exact setup steps.
+# A missing file makes this unit fail to start (loud, not a silent
+# unauthenticated fallback) -- EnvironmentFile= (no leading '-') is
+# intentional here, not EnvironmentFile=-.
+EnvironmentFile=/etc/cytadel/cytadel.env
+
+# --- What actually runs -----------------------------------------------------
+# No --db flag on the command line: CYTADEL_DB_PATH from the EnvironmentFile
+# above is all cytadel_sync_cmd_resolve_db_path() needs (src/cli/sync_cmd.c).
+# Update this path if the binary is installed somewhere other than
+# /usr/local/bin -- see packaging/README.md ("there is no `cmake --install`
+# target in this project yet; the binary is copied into place by hand").
+ExecStart=/usr/local/bin/cytadel-scan sync
+
+# A failed run is left as a failed unit (visible via `systemctl status`/
+# `journalctl -u cytadel-sync.service`) rather than retried immediately --
+# the NEXT scheduled timer firing already self-heals via cytadel_nvd_catchup's
+# own multi-window catch-up loop (a missed day/run just means a wider
+# [watermark, now] gap to close next time). No Restart= directive is set on
+# purpose: an immediate crash-loop retry against a possibly-still-broken
+# network/API would only hammer NVD's rate limit for no benefit.
+
+# --- Sandboxing / capability posture ---------------------------------------
+# This job needs NO Linux capability at all (no raw sockets, no privileged
+# bind, no filesystem operations outside StateDirectory) -- emptied out
+# entirely rather than left at DynamicUser's own already-reduced default.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+
+# Whole-filesystem read-only except StateDirectory (/var/lib/cytadel, added
+# automatically by StateDirectory= above) and the API/pseudo filesystems
+# systemd itself always keeps writable. /etc (incl. the EnvironmentFile,
+# read by systemd itself, not this process) and /usr/local/bin (the binary)
+# stay read-only to this process, which is exactly right -- sync never
+# needs to write anywhere except its own DB.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+
+# Outbound HTTPS to services.nvd.nist.gov needs AF_INET/AF_INET6; AF_UNIX is
+# kept for local name resolution (glibc NSS / systemd-resolved talk to a
+# local AF_UNIX socket, e.g. /run/systemd/resolve/io.systemd.Resolve) --
+# without it, DNS resolution of the NVD hostname can fail depending on the
+# host's resolver configuration. No AF_NETLINK/AF_PACKET/raw-socket family
+# is needed or granted.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# A reasonably strict default syscall allow-list for an ordinary network
+# client process (systemd's own curated "@system-service" group -- covers
+# what a well-behaved userspace network client needs, excludes
+# module-loading, mount, raw I/O port access, etc.).
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+# Intentionally NO [Install] WantedBy= here -- this .service is triggered
+# exclusively by cytadel-sync.timer's own [Install] section. Enabling this
+# unit directly would let `systemctl start cytadel-sync.service` work
+# on-demand (harmless) but must never be enabled for boot-time activation
+# itself; only the timer should be `systemctl enable`d.

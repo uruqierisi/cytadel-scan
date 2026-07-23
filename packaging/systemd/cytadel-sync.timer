@@ -1,0 +1,47 @@
+# Cytadel Scan -- schedules cytadel-sync.service (M9 Phase 4b).
+#
+# NVD updates continuously, but `cytadel-scan sync`'s own multi-window
+# catch-up logic (src/db/nvd_catchup.c) means a daily cadence is a sensible
+# default, not a hard requirement: if a run is missed (host was off, a prior
+# run failed), the NEXT run's [watermark, now] window is simply wider and
+# self-heals in one invocation -- there is no need for aggressive retry
+# scheduling here.
+#
+# Enable with (see packaging/README.md for the full walkthrough):
+#   sudo systemctl enable --now cytadel-sync.timer
+# Disable with:
+#   sudo systemctl disable --now cytadel-sync.timer
+# Run once, immediately, without waiting for the schedule:
+#   sudo systemctl start cytadel-sync.service
+# Inspect the schedule / last-and-next run times:
+#   systemctl list-timers cytadel-sync.timer
+# Follow logs from the most recent run:
+#   journalctl -u cytadel-sync.service -e
+
+[Unit]
+Description=Daily schedule for Cytadel Scan's NVD vulnerability database sync
+
+[Timer]
+# Once a day is a deliberate, documented choice (see header comment above)
+# -- not a fixed NVD SLA requirement.
+OnCalendar=daily
+# If the host was powered off / the timer unit was inactive when the last
+# scheduled OnCalendar= fired, run once shortly after the next boot instead
+# of silently skipping straight to the following day -- this is exactly the
+# "a missed day self-heals" property the task brief calls for, applied to
+# the SCHEDULE itself (the sync command's own catch-up logic then handles
+# self-healing the DATA once it does run).
+Persistent=true
+# Spreads the actual start time over a 0-30 minute window around the
+# nominal daily trigger so a fleet of hosts sharing this same unit file
+# does not all hit the public NVD API in the same instant -- good-citizen
+# behavior toward a shared public API, not a correctness requirement.
+RandomizedDelaySec=30m
+# Non-overlap: cytadel-sync.service is an ordinary (non-templated) unit, so
+# systemd only ever runs one instance of it at a time by construction -- if
+# a run is still active when this timer next elapses, systemd simply does
+# not start a second concurrent instance (see systemd.unit(5)); no separate
+# lock file is needed.
+
+[Install]
+WantedBy=timers.target
