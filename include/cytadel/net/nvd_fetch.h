@@ -291,6 +291,21 @@ cytadel_nvd_fetch_status_t cytadel_nvd_fetch_page(const cytadel_nvd_fetch_config
                                                    const char *last_mod_end_date, char **out_body,
                                                    size_t *out_len);
 
+/* Generic single-URL GET on the SAME transport as cytadel_nvd_fetch_page()
+ * (bounded response body, TLS verification always on, retry-with-backoff for
+ * transport errors / 429 / 5xx), for feeds other than NVD -- the CISA KEV
+ * catalog and the first.org EPSS API. `url` is the FULL request URL (including
+ * any query string the caller has already built and percent-encoded);
+ * `cfg->base_url` is ignored for this call. Response semantics are identical to
+ * cytadel_nvd_fetch_page(): on CYTADEL_NVD_FETCH_OK, `*out_body` is a heap
+ * buffer of exactly `*out_len` bytes the caller must free(); any non-OK status
+ * leaves them NULL/0.
+ *
+ * CRITICAL: this NEVER attaches the NVD apiKey header -- CYTADEL_NVD_API_KEY is
+ * an NVD credential and is not sent to any other host. */
+cytadel_nvd_fetch_status_t cytadel_nvd_fetch_get(const cytadel_nvd_fetch_config_t *cfg, const char *url,
+                                                 char **out_body, size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

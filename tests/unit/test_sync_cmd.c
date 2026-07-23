@@ -364,6 +364,11 @@ static void test_run_end_to_end_wiring_no_network(void) {
      * the same operator env knob build_fetch_config honors) to keep it fast and
      * deterministic. Retry behavior itself is covered by test_nvd_catchup.c. */
     CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "0", 1), 0);
+    /* sync now refreshes all three feeds; KEV/EPSS default to real
+     * cisa.gov/first.org URLs, so point them at the same dead loopback port to
+     * keep this wiring test fully offline and fast. */
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_KEV_URL", url, 1), 0);
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_EPSS_URL", url, 1), 0);
 
     cytadel_sync_cmd_args_t args;
     memset(&args, 0, sizeof(args));
@@ -371,10 +376,12 @@ static void test_run_end_to_end_wiring_no_network(void) {
     args.now_override = "2000-01-01T00:00:00.000Z";
 
     int rc = cytadel_sync_cmd_run(&args);
-    CYTADEL_ASSERT_EQ(rc, EXIT_FAILURE); /* connection refused -> catch-up fails */
+    CYTADEL_ASSERT_EQ(rc, EXIT_FAILURE); /* connection refused -> feeds fail */
 
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_API_URL"), 0);
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_MAX_RETRIES"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_KEV_URL"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_EPSS_URL"), 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -434,6 +441,8 @@ static void test_run_never_leaks_api_key_value(void) {
     snprintf(url, sizeof(url), "http://127.0.0.1:%u", (unsigned)port);
     CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_API_URL", url, 1), 0);
     CYTADEL_ASSERT_EQ(setenv("CYTADEL_NVD_MAX_RETRIES", "0", 1), 0); /* fail fast; see wiring test */
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_KEV_URL", url, 1), 0);         /* keep all three feeds offline */
+    CYTADEL_ASSERT_EQ(setenv("CYTADEL_EPSS_URL", url, 1), 0);
 
     char out_path[256];
     make_temp_path(out_path, sizeof(out_path), "-capture.txt");
@@ -476,6 +485,8 @@ static void test_run_never_leaks_api_key_value(void) {
     CYTADEL_ASSERT_EQ(unsetenv("NVD_API_KEY"), 0);
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_API_URL"), 0);
     CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_NVD_MAX_RETRIES"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_KEV_URL"), 0);
+    CYTADEL_ASSERT_EQ(unsetenv("CYTADEL_EPSS_URL"), 0);
 }
 
 int main(void) {

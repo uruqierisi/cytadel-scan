@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cytadel/db/epss_sync.h"
+#include "cytadel/db/kev_sync.h"
 #include "log.h"
 
 /* Upper bound on the operator-tunable retry count (CYTADEL_NVD_MAX_RETRIES):
@@ -202,37 +204,60 @@ int cytadel_sync_cmd_run(const cytadel_sync_cmd_args_t *args) {
         return EXIT_FAILURE;
     }
 
-    cytadel_nvd_catchup_counts_t counts;
-    memset(&counts, 0, sizeof(counts));
-    cytadel_nvd_catchup_status_t status = cytadel_nvd_catchup(db, &cfg, now, &counts);
+    /* One `sync` refreshes all three intel feeds. They are independent, so a
+     * failure in one does NOT skip the others -- each is attempted, each
+     * reports its own result, and the command fails overall iff any feed
+     * failed. Each feed's own driver upholds watermark atomicity (a failure
+     * leaves that feed's watermark untouched, and the next run re-pulls it
+     * idempotently), so partial progress across feeds is always safe. */
+
+    /* --- 1. NVD CVE delta sync (paginated lastMod windows) --- */
+    cytadel_nvd_catchup_counts_t nvd_counts;
+    memset(&nvd_counts, 0, sizeof(nvd_counts));
+    cytadel_nvd_catchup_status_t nvd_status = cytadel_nvd_catchup(db, &cfg, now, &nvd_counts);
+    bool nvd_ok = (nvd_status == CYTADEL_NVD_CATCHUP_OK);
+    printf("cytadel-scan sync: [NVD]  %zu window(s), %zu page(s), %zu CVE(s) ingested, %zu skipped -- %s\n",
+           nvd_counts.windows_completed, nvd_counts.pages_fetched, nvd_counts.cve_ingested,
+           nvd_counts.cve_skipped, nvd_ok ? "OK" : cytadel_nvd_catchup_status_to_string(nvd_status));
+
+    /* --- 2. CISA KEV catalog (single JSON document, one full pull) --- */
+    cytadel_kev_sync_counts_t kev_counts;
+    cytadel_kev_sync_status_t kev_status = cytadel_kev_sync(db, &cfg, getenv("CYTADEL_KEV_URL"), &kev_counts);
+    bool kev_ok = (kev_status == CYTADEL_KEV_SYNC_OK);
+    printf("cytadel-scan sync: [KEV]  %zu ingested, %zu skipped -- %s\n", kev_counts.kev_ingested,
+           kev_counts.kev_skipped, kev_ok ? "OK" : cytadel_kev_sync_status_to_string(kev_status));
+
+    /* --- 3. first.org EPSS feed (paginated) --- */
+    long epss_page_size = 0; /* 0 -> the driver's default */
+    const char *eps = getenv("CYTADEL_EPSS_PAGE_SIZE");
+    if (eps != NULL && eps[0] != '\0') {
+        errno = 0;
+        char *end = NULL;
+        long v = strtol(eps, &end, 10);
+        if (errno == 0 && end != eps && *end == '\0' && v > 0) {
+            epss_page_size = v;
+        } else {
+            fprintf(stderr, "cytadel-scan sync: warning: ignoring invalid CYTADEL_EPSS_PAGE_SIZE value\n");
+        }
+    }
+    cytadel_epss_sync_counts_t epss_counts;
+    cytadel_epss_sync_status_t epss_status =
+        cytadel_epss_sync(db, &cfg, getenv("CYTADEL_EPSS_URL"), epss_page_size, &epss_counts);
+    bool epss_ok = (epss_status == CYTADEL_EPSS_SYNC_OK);
+    printf("cytadel-scan sync: [EPSS] %zu page(s), %zu ingested, %zu skipped -- %s\n",
+           epss_counts.pages_fetched, epss_counts.epss_ingested, epss_counts.epss_skipped,
+           epss_ok ? "OK" : cytadel_epss_sync_status_to_string(epss_status));
 
     cytadel_db_close(db);
     db = NULL;
 
-    printf("cytadel-scan sync: %zu window(s) completed, %zu page(s) fetched, %zu CVE(s) ingested, "
-           "%zu CVE(s) skipped\n",
-           counts.windows_completed, counts.pages_fetched, counts.cve_ingested, counts.cve_skipped);
-
-    if (status == CYTADEL_NVD_CATCHUP_OK) {
-        /* nvd_catchup.h's own loop invariant: a fully successful catch-up
-         * (this OK status) only ever stops once its cursor has reached
-         * `now` exactly -- so whenever at least one window ran, the
-         * durably-committed watermark this call just advanced IS `now`
-         * itself; this is reported without any extra DB read (no accessor
-         * for it exists, or is needed, beyond this). Zero windows means the
-         * watermark was already at or beyond `now` before this call ever
-         * started -- its exact prior value is simply left alone and not
-         * fabricated here. */
-        if (counts.windows_completed > 0) {
-            printf("cytadel-scan sync: watermark advanced to %s\n", now);
-        } else {
-            printf("cytadel-scan sync: watermark already current -- no sync needed\n");
-        }
+    if (nvd_ok && kev_ok && epss_ok) {
+        printf("cytadel-scan sync: all three feeds refreshed successfully\n");
         return EXIT_SUCCESS;
     }
-
     fprintf(stderr,
-            "cytadel-scan sync: error: catch-up failed after %zu completed window(s) (%s)\n",
-            counts.windows_completed, cytadel_nvd_catchup_status_to_string(status));
+            "cytadel-scan sync: error: one or more feeds failed (NVD=%s, KEV=%s, EPSS=%s)\n",
+            cytadel_nvd_catchup_status_to_string(nvd_status), cytadel_kev_sync_status_to_string(kev_status),
+            cytadel_epss_sync_status_to_string(epss_status));
     return EXIT_FAILURE;
 }

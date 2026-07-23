@@ -55,7 +55,9 @@ target_sources(cytadel PRIVATE
     nvd_sync.c
     nvd_catchup.c
     kev_ingest.c
+    kev_sync.c
     epss_ingest.c
+    epss_sync.c
     scan_persist.c
 )
 target_link_libraries(cytadel PRIVATE cytadel_sqlite3 cytadel_cjson)

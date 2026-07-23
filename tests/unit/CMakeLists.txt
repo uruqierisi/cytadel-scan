@@ -571,6 +571,19 @@ target_link_libraries(test_nvd_catchup PRIVATE cytadel cytadel_warnings cytadel_
 add_test(NAME test_nvd_catchup COMMAND test_nvd_catchup)
 set_tests_properties(test_nvd_catchup PROPERTIES LABELS "unit")
 
+# KEV / EPSS live-fetch drivers (src/db/kev_sync.c, src/db/epss_sync.c) driven
+# against a loopback fixture HTTP server -- same reasoning as test_nvd_catchup
+# above for linking cytadel_sqlite3 / Threads::Threads.
+add_executable(test_kev_sync test_kev_sync.c)
+target_link_libraries(test_kev_sync PRIVATE cytadel cytadel_warnings cytadel_sqlite3 Threads::Threads)
+add_test(NAME test_kev_sync COMMAND test_kev_sync)
+set_tests_properties(test_kev_sync PROPERTIES LABELS "unit")
+
+add_executable(test_epss_sync test_epss_sync.c)
+target_link_libraries(test_epss_sync PRIVATE cytadel cytadel_warnings cytadel_sqlite3 Threads::Threads)
+add_test(NAME test_epss_sync COMMAND test_epss_sync)
+set_tests_properties(test_epss_sync PROPERTIES LABELS "unit")
+
 # --------------------------------------------------------------------- #
 # Milestone 8 slice 1: src/report/escape.c, the report-output escaper
 # module (CRITICAL XSS-defense surface -- see include/cytadel/report/

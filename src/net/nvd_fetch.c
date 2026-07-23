@@ -335,7 +335,8 @@ typedef enum {
  * every other outcome leaves them NULL/0 (the local write-ctx buffer, if
  * any was allocated, is freed here instead). */
 static attempt_result_t do_one_attempt(const cytadel_nvd_fetch_config_t *cfg, const char *url,
-                                        char **out_body, size_t *out_len, long *out_retry_after_sec) {
+                                        bool attach_api_key, char **out_body, size_t *out_len,
+                                        long *out_retry_after_sec) {
     *out_body = NULL;
     *out_len = 0;
     *out_retry_after_sec = 0;
@@ -348,7 +349,10 @@ static attempt_result_t do_one_attempt(const cytadel_nvd_fetch_config_t *cfg, co
         return ATTEMPT_TRANSPORT_FAIL;
     }
 
-    struct curl_slist *headers = append_api_key_header(NULL, cfg->base_url);
+    /* The NVD API key is attached ONLY for NVD requests (attach_api_key). A
+     * generic feed GET (KEV/EPSS) must never send it -- that would leak the NVD
+     * key to an unrelated host (cisa.gov / first.org). */
+    struct curl_slist *headers = attach_api_key ? append_api_key_header(NULL, url) : NULL;
 
     fetch_write_ctx_t ctx = {0};
     ctx.hard_cap = cfg->max_response_bytes;
@@ -535,58 +539,18 @@ static void fetch_sleep_ms(long ms) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Public entry point.                                                 */
+/* Shared bounded retry loop -- drives do_one_attempt() for a fully-    */
+/* built URL, used by both the NVD page fetch and the generic feed GET. */
 /* ------------------------------------------------------------------ */
 
-cytadel_nvd_fetch_status_t cytadel_nvd_fetch_page(const cytadel_nvd_fetch_config_t *cfg, int start_index,
-                                                   const char *last_mod_start_date,
-                                                   const char *last_mod_end_date, char **out_body,
-                                                   size_t *out_len) {
-    if (out_body != NULL) {
-        *out_body = NULL;
-    }
-    if (out_len != NULL) {
-        *out_len = 0;
-    }
-    if (cfg == NULL || cfg->base_url == NULL || cfg->base_url[0] == '\0' || out_body == NULL ||
-        out_len == NULL || start_index < 0) {
-        cytadel_log_error("nvd_fetch: fetch_page() called with a NULL cfg/out_body/out_len, an empty "
-                           "cfg->base_url, or a negative start_index");
-        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
-    }
-    bool has_start = (last_mod_start_date != NULL && last_mod_start_date[0] != '\0');
-    bool has_end = (last_mod_end_date != NULL && last_mod_end_date[0] != '\0');
-    if (has_start != has_end) {
-        cytadel_log_error("nvd_fetch: fetch_page() called with exactly one of "
-                           "last_mod_start_date/last_mod_end_date set -- both or neither is required");
-        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
-    }
-
-    pthread_once(&g_curl_global_init_once, curl_global_init_once);
-
-    /* A short-lived easy handle purely so curl_easy_escape() has a `CURL *`
-     * to hang off of -- unrelated to (and cleaned up well before) the easy
-     * handle each retry attempt below creates for the actual request. */
-    CURL *url_helper = curl_easy_init();
-    if (url_helper == NULL) {
-        cytadel_log_error("nvd_fetch: curl_easy_init() failed while building the request URL");
-        return CYTADEL_NVD_FETCH_ERR_TRANSPORT;
-    }
-    char url[CYTADEL_NVD_FETCH_URL_BUF_LEN];
-    bool built = build_url(cfg, url_helper, start_index, has_start ? last_mod_start_date : NULL,
-                            has_end ? last_mod_end_date : NULL, url, sizeof(url));
-    curl_easy_cleanup(url_helper);
-    if (!built) {
-        cytadel_log_error("nvd_fetch: failed to build the request URL (unexpectedly long inputs)");
-        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
-    }
-
+static cytadel_nvd_fetch_status_t fetch_retry_loop(const cytadel_nvd_fetch_config_t *cfg, const char *url,
+                                                   bool attach_api_key, char **out_body, size_t *out_len) {
     int attempt = 0;
     for (;;) {
         char *body = NULL;
         size_t len = 0;
         long retry_after_sec = 0;
-        attempt_result_t r = do_one_attempt(cfg, url, &body, &len, &retry_after_sec);
+        attempt_result_t r = do_one_attempt(cfg, url, attach_api_key, &body, &len, &retry_after_sec);
 
         if (r == ATTEMPT_OK) {
             *out_body = body;
@@ -633,4 +597,75 @@ cytadel_nvd_fetch_status_t cytadel_nvd_fetch_page(const cytadel_nvd_fetch_config
         cytadel_log_info("nvd_fetch: retrying in %ld ms (attempt %d/%d)", delay_ms, attempt, cfg->max_retries);
         fetch_sleep_ms(delay_ms);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Public entry points.                                                */
+/* ------------------------------------------------------------------ */
+
+cytadel_nvd_fetch_status_t cytadel_nvd_fetch_page(const cytadel_nvd_fetch_config_t *cfg, int start_index,
+                                                   const char *last_mod_start_date,
+                                                   const char *last_mod_end_date, char **out_body,
+                                                   size_t *out_len) {
+    if (out_body != NULL) {
+        *out_body = NULL;
+    }
+    if (out_len != NULL) {
+        *out_len = 0;
+    }
+    if (cfg == NULL || cfg->base_url == NULL || cfg->base_url[0] == '\0' || out_body == NULL ||
+        out_len == NULL || start_index < 0) {
+        cytadel_log_error("nvd_fetch: fetch_page() called with a NULL cfg/out_body/out_len, an empty "
+                           "cfg->base_url, or a negative start_index");
+        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
+    }
+    bool has_start = (last_mod_start_date != NULL && last_mod_start_date[0] != '\0');
+    bool has_end = (last_mod_end_date != NULL && last_mod_end_date[0] != '\0');
+    if (has_start != has_end) {
+        cytadel_log_error("nvd_fetch: fetch_page() called with exactly one of "
+                           "last_mod_start_date/last_mod_end_date set -- both or neither is required");
+        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
+    }
+
+    pthread_once(&g_curl_global_init_once, curl_global_init_once);
+
+    /* A short-lived easy handle purely so curl_easy_escape() has a `CURL *`
+     * to hang off of -- unrelated to (and cleaned up well before) the easy
+     * handle each retry attempt below creates for the actual request. */
+    CURL *url_helper = curl_easy_init();
+    if (url_helper == NULL) {
+        cytadel_log_error("nvd_fetch: curl_easy_init() failed while building the request URL");
+        return CYTADEL_NVD_FETCH_ERR_TRANSPORT;
+    }
+    char url[CYTADEL_NVD_FETCH_URL_BUF_LEN];
+    bool built = build_url(cfg, url_helper, start_index, has_start ? last_mod_start_date : NULL,
+                            has_end ? last_mod_end_date : NULL, url, sizeof(url));
+    curl_easy_cleanup(url_helper);
+    if (!built) {
+        cytadel_log_error("nvd_fetch: failed to build the request URL (unexpectedly long inputs)");
+        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
+    }
+
+    /* NVD requests attach the apiKey header (when configured + https). */
+    return fetch_retry_loop(cfg, url, true, out_body, out_len);
+}
+
+cytadel_nvd_fetch_status_t cytadel_nvd_fetch_get(const cytadel_nvd_fetch_config_t *cfg, const char *url,
+                                                 char **out_body, size_t *out_len) {
+    if (out_body != NULL) {
+        *out_body = NULL;
+    }
+    if (out_len != NULL) {
+        *out_len = 0;
+    }
+    if (cfg == NULL || url == NULL || url[0] == '\0' || out_body == NULL || out_len == NULL) {
+        cytadel_log_error("nvd_fetch: fetch_get() called with a NULL cfg/url/out_body/out_len, or an "
+                           "empty url");
+        return CYTADEL_NVD_FETCH_ERR_INVALID_ARG;
+    }
+    /* Generic feed GET (KEV/EPSS): the NVD apiKey is NEVER attached -- it must
+     * not leak to a non-NVD host. Same bounded-read / retry-with-backoff /
+     * TLS-verify transport as the NVD page fetch otherwise. `url` is used
+     * verbatim (the caller has already built any query string). */
+    return fetch_retry_loop(cfg, url, false, out_body, out_len);
 }
